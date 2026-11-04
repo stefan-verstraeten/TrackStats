@@ -9,7 +9,7 @@ You define your own trackers; the app stores everything **only on your device** 
 |---|---|---|---|
 | **Measurement** | Blood pressure, weight, glucose, sleep hours… One or more values, each with a unit, decimals and an optional target range | Form with one input per value | Line chart with target bands; average ± SD, latest, change, min, max, % in target |
 | **Scale** | Mood, pain, energy (0/1 to 3–10) | Tap a number | Line chart; average, latest, min, max |
-| **Counter** | Liquid intake (ml), episodes | One-tap **+amount** (e.g. +250 ml, set per tracker) or any amount | Daily bars with goal line; per-day average, total, best day, goal days |
+| **Counter** | Liquid intake (ml), episodes | Free amount; optionally per item with its type (e.g. 330 ml · Coffee — quick-pick chips or type your own, several items per entry). Without types: one-tap **+amount** | Daily bars with optional goal line; per-day average, best day; breakdown by type |
 | **Yes / No** | Medication taken, exercise done | One-tap **✓** | Calendar grid; % of days, current and best streak |
 
 ## Screens

@@ -40,6 +40,11 @@ function relTime(d) {
 export const COLORS = ['#0d9488', '#2563eb', '#db2777', '#d97706', '#7c3aed', '#059669', '#dc2626', '#0891b2'];
 const TYPE_LABEL = { number: 'Measurement', scale: 'Scale', count: 'Counter', check: 'Yes / No' };
 
+/** Counters that record what each item was (e.g. liquid intake: water, coffee…). */
+const hasKinds = (t) => t.type === 'count' && !!t.trackKind;
+const DEFAULT_DRINKS = ['Water', 'Coffee', 'Tea', 'Milk', 'Juice', 'Soft drink', 'Soup', 'Alcohol'];
+const kindLabel = (e) => e.kind || 'Unspecified';
+
 /** Amount a counter adds per tap (e.g. 250 ml). */
 const stepOf = (t) => (num(t.step) && t.step > 0 ? t.step : 1);
 
@@ -94,7 +99,7 @@ function formatEntry(t, e, units = true) {
     case 'check':
       return v.v === 1 ? 'Yes' : 'No';
     case 'count':
-      return `${fmt(v.v)}${units && t.unit ? ' ' + esc(t.unit) : ''}`;
+      return `${fmt(v.v)}${units && t.unit ? ' ' + esc(t.unit) : ''}${units && e.kind ? ' · ' + esc(e.kind) : ''}`;
     case 'scale':
       return units ? `${fmt(v.v)} / ${t.scaleMax}` : fmt(v.v);
     default: {
@@ -119,7 +124,8 @@ function todaySummary(t) {
   if (t.type === 'count') {
     const sum = today.reduce((a, e) => a + (e.values?.v || 0), 0);
     const goal = t.dailyGoal > 0 ? ` of ${fmt(t.dailyGoal)}` : '';
-    return { text: `Today: <b>${fmt(sum)}</b>${goal}${t.unit ? ' ' + esc(t.unit) : ''}`, done: t.dailyGoal > 0 && sum >= t.dailyGoal };
+    const items = hasKinds(t) && today.length ? ` · ${plural(today.length, 'drink', 'drinks')}` : '';
+    return { text: `Today: <b>${fmt(sum)}</b>${goal}${t.unit ? ' ' + esc(t.unit) : ''}${items}`, done: t.dailyGoal > 0 && sum >= t.dailyGoal };
   }
   if (t.type === 'check') {
     const yes = today.some((e) => e.values?.v === 1);
@@ -188,7 +194,9 @@ function renderToday() {
         .map((t) => {
           const s = todaySummary(t);
           let quick = '';
-          if (t.type === 'count') {
+          if (hasKinds(t)) {
+            quick = `<button class="quick" data-act="log" data-id="${t.id}" aria-label="Log ${esc(t.name)}">+</button>`;
+          } else if (t.type === 'count') {
             const step = stepOf(t);
             quick = `<button class="quick${String(step).length > 2 ? ' wide' : ''}" data-act="quick-count" data-id="${t.id}" aria-label="Add ${step} ${esc(t.unit || '')} to ${esc(t.name)}">+${fmt(step)}</button>`;
           }
@@ -294,7 +302,7 @@ function dayAggregate(t, list = []) {
     return { n: list.length, fields: store.fieldsOf(t).map((f) => ({ f, st: S.fieldStats(S.points(list, f.id), f) })) };
   }
   if (t.type === 'count') {
-    return { n: list.length, total: list.reduce((a, e) => a + (num(e.values?.v) ? e.values.v : 0), 0) };
+    return { n: list.length, total: list.reduce((a, e) => a + (num(e.values?.v) ? e.values.v : 0), 0), byKind: hasKinds(t) ? kindTotals(list) : null };
   }
   if (t.type === 'scale') {
     const v = scaleVals(list);
@@ -302,6 +310,37 @@ function dayAggregate(t, list = []) {
     return { n: v.length, max: Math.max(...v), mean: v.reduce((a, b) => a + b, 0) / v.length };
   }
   return { n: list.length, yes: list.some((e) => e.values?.v === 1) };
+}
+
+/** [{kind, total, n}] sorted by total, largest first. */
+function kindTotals(list) {
+  const m = new Map();
+  for (const e of list) {
+    if (!num(e.values?.v)) continue;
+    const k = kindLabel(e);
+    const cur = m.get(k) || { kind: k, total: 0, n: 0 };
+    cur.total += e.values.v;
+    cur.n += 1;
+    m.set(k, cur);
+  }
+  return [...m.values()].sort((a, b) => b.total - a.total);
+}
+
+/** Horizontal bars: share of each type in the total. perDays: show "per day" averages over that many days. */
+function kindBreakdown(t, kinds, perDays = 0) {
+  if (!kinds?.length) return '';
+  const total = kinds.reduce((a, k) => a + k.total, 0) || 1;
+  const unit = t.unit ? ' ' + esc(t.unit) : '';
+  return `<div class="kinds">${kinds
+    .map(
+      (k) => `
+      <div class="kind-row">
+        <span class="kname">${esc(k.kind)}</span>
+        <span class="kbar"><i style="width:${((k.total / total) * 100).toFixed(1)}%;background:var(--c)"></i></span>
+        <span class="kval">${perDays ? fmt(k.total / perDays) + unit + '<small>/day</small>' : fmt(k.total) + unit}<small> · ${Math.round((k.total / total) * 100)}%</small></span>
+      </div>`
+    )
+    .join('')}</div>`;
 }
 
 /** Compact text of a day aggregate (table cells). */
@@ -382,6 +421,7 @@ function daySummaryCard(t, list) {
   const a = dayAggregate(t, list);
   let sub = '';
   let tiles = '';
+  let extra = '';
   if (t.type === 'number') {
     sub = a.n ? `${plural(a.n, 'reading', 'readings')} · daily average` : 'No readings';
     tiles = a.fields
@@ -391,16 +431,17 @@ function daySummaryCard(t, list) {
       )
       .join('');
   } else if (t.type === 'count') {
-    sub = a.n ? plural(a.n, 'entry', 'entries') : 'Nothing logged';
+    sub = a.n ? (hasKinds(t) ? plural(a.n, 'drink', 'drinks') : plural(a.n, 'entry', 'entries')) : 'Nothing logged';
     const goal = t.dailyGoal > 0 ? `${pct(a.total / t.dailyGoal)} of ${fmt(t.dailyGoal)} goal` : '';
     tiles = tile('Total', fmt(a.total), [esc(t.unit), goal].filter(Boolean).join(' · '));
+    extra = kindBreakdown(t, a.byKind);
   } else if (t.type === 'scale') {
     sub = a.n ? plural(a.n, 'score', 'scores') : t.defaultZero ? 'No score logged — counts as 0' : 'No score';
     tiles = a.max == null ? '' : tile('Highest', fmt(a.max), `of ${t.scaleMax}`) + (a.n > 1 ? tile('Average', fmt(a.mean, 1)) : '');
   } else {
     tiles = tile('Done', a.yes ? 'Yes' : 'No');
   }
-  return `<section class="card stat-block" style="--c:${t.color}">${cardTitle(t, sub)}${tiles ? `<div class="tiles">${tiles}</div>` : ''}</section>`;
+  return `<section class="card stat-block" style="--c:${t.color}">${cardTitle(t, sub)}${tiles ? `<div class="tiles">${tiles}</div>` : ''}${extra}</section>`;
 }
 
 function dayView(list) {
@@ -473,7 +514,8 @@ function periodCard(t, start, end, dayMap) {
         ${tile('Per day', fmt(st.perDay, dp), esc(t.unit))}
         ${tile('Best day', fmt(st.best), esc(t.unit))}
         ${st.goalDays != null ? tile('Goal met', `${st.goalDays}<small> / ${st.days}</small>`, 'days') : tile('Days logged', `${st.activeDays}<small> / ${st.days}</small>`)}
-      </div>`;
+      </div>` +
+      (hasKinds(t) && period.length ? `<h4 class="sub-h">By type <small>average per day</small></h4>${kindBreakdown(t, kindTotals(period), daily.length)}` : '');
   } else if (t.type === 'scale') {
     const daily = S.eachDay(start, end)
       .map((d) => {
@@ -643,7 +685,12 @@ sheet.addEventListener('click', (ev) => {
  * Inputs for one tracker's values, named `${prefix}${fieldId}`.
  * fresh: combined form — nothing preselected except a 0 for "no entry = 0" scales.
  */
-function valueInputs(t, vals, prefix, { fresh = false, autofocus = false, hintLast = false } = {}) {
+function valueInputs(t, vals, prefix, { fresh = false, autofocus = false, hintLast = false, kind = '', more = true } = {}) {
+  if (hasKinds(t)) {
+    return `
+      <div class="drinks" data-tracker="${t.id}">${drinkRow(t, prefix, 0, vals.v, kind)}</div>
+      ${more ? `<button type="button" class="btn block slim" data-act="add-drink" data-tracker="${t.id}" data-prefix="${prefix}">＋ Another ${esc((t.kindLabel || 'item').toLowerCase())}</button>` : ''}`;
+  }
   if (t.type === 'number') {
     const last = hintLast ? store.entries(t.id)[0] : null;
     const fields = store.fieldsOf(t);
@@ -688,6 +735,37 @@ function valueInputs(t, vals, prefix, { fresh = false, autofocus = false, hintLa
       <button type="button" data-act="step" data-d="${step}" aria-label="More">+</button>
     </div>
     ${t.unit ? `<small class="block center">${esc(t.unit)} · − / + change by ${fmt(step)}</small>` : ''}`;
+}
+
+/** One free-amount item (e.g. a drink): amount + what it was, with quick-pick chips. */
+function drinkRow(t, prefix, i, amount = null, kind = '') {
+  const kinds = t.kinds?.length ? t.kinds : DEFAULT_DRINKS;
+  return `
+    <div class="drink-row">
+      <div class="drink-top">
+        <label class="field"><span>Amount${t.unit ? ` <small>${esc(t.unit)}</small>` : ''}</span>
+          <input name="${prefix}v__${i}" type="text" inputmode="decimal" autocomplete="off" value="${num(amount) ? amount : ''}" placeholder="e.g. 330"></label>
+        <label class="field"><span>${esc(t.kindLabel || 'Type')}</span>
+          <input name="${prefix}kind__${i}" type="text" autocomplete="off" autocapitalize="sentences" value="${esc(kind)}" placeholder="Type or pick below"></label>
+      </div>
+      <div class="kchips">${kinds.map((k) => `<button type="button" class="kchip${k === kind ? ' on' : ''}" data-act="pick-kind" data-kind="${esc(k)}">${esc(k)}</button>`).join('')}</div>
+    </div>`;
+}
+
+/** Read all item rows of a tracker: { items: [{v, kind}] } or { error }. */
+function readDrinks(t, fd, prefix) {
+  const items = [];
+  for (let i = 0; fd.has(`${prefix}v__${i}`); i++) {
+    const v = parseNum(fd.get(`${prefix}v__${i}`));
+    const kind = String(fd.get(`${prefix}kind__${i}`) || '').trim();
+    if (v == null) {
+      if (kind) return { error: `Enter an amount for ${kind}.` };
+      continue;
+    }
+    if (!(v > 0)) return { error: 'Amounts must be more than 0.' };
+    items.push({ v, kind });
+  }
+  return { items };
 }
 
 function readValues(t, fd, prefix) {
@@ -742,6 +820,12 @@ function openNewEntry(dayKey) {
       const note = String(fd.get('note') || '').trim();
       const batch = [];
       for (const t of list) {
+        if (hasKinds(t)) {
+          const r = readDrinks(t, fd, `x_${t.id}_`);
+          if (r.error) return formError(form, r.error);
+          r.items.forEach(({ v, kind }) => batch.push({ id: store.uid(), trackerId: t.id, ts: ts.toISOString(), values: { v }, kind, note }));
+          continue;
+        }
         const values = readValues(t, fd, `x_${t.id}_`);
         if (!Object.keys(values).length) continue;
         if (t.type === 'scale' && t.defaultZero && values.v === 0) continue; // 0 is the default, nothing to store
@@ -763,7 +847,7 @@ function openLog(trackerId, entryId) {
   if (!t) return;
   const body = `
     <div class="sheet-tracker" style="--c:${t.color}"><span class="ticon">${esc(t.icon || '•')}</span>${esc(t.name)}</div>
-    <div class="field" style="--c:${t.color}">${valueInputs(t, e?.values || {}, 'f_', { autofocus: true, hintLast: !e })}</div>
+    <div class="field" style="--c:${t.color}">${valueInputs(t, e?.values || {}, 'f_', { autofocus: true, hintLast: !e, kind: e?.kind || '', more: !e })}</div>
     ${whenInputs(e ? new Date(e.ts) : new Date())}
     <label class="field"><span>Note <small>(optional)</small></span><textarea name="note" rows="2" placeholder="e.g. after exercise">${esc(e?.note || '')}</textarea></label>
     <p class="form-error" hidden></p>`;
@@ -771,6 +855,18 @@ function openLog(trackerId, entryId) {
   openSheet(e ? 'Edit entry' : 'Log', body, {
     footer: e ? `<button type="button" class="btn danger block" data-act="delete-entry" data-id="${e.id}">Delete entry</button>` : '',
     onSubmit(fd, form) {
+      if (hasKinds(t)) {
+        const r = readDrinks(t, fd, 'f_');
+        if (r.error) return formError(form, r.error);
+        if (!r.items.length) return formError(form, 'Enter an amount.');
+        const ts = readWhen(fd);
+        if (!ts) return formError(form, 'Enter a valid date and time.');
+        const note = String(fd.get('note') || '').trim();
+        if (e) store.saveEntry({ ...e, ts: ts.toISOString(), values: { v: r.items[0].v }, kind: r.items[0].kind, note });
+        else store.saveEntries(r.items.map(({ v, kind }) => ({ id: store.uid(), trackerId: t.id, ts: ts.toISOString(), values: { v }, kind, note })));
+        toast(e ? 'Entry updated' : `${t.name}: ${plural(r.items.length, 'item', 'items')} logged`);
+        return;
+      }
       const values = readValues(t, fd, 'f_');
       if (!Object.keys(values).length) return formError(form, t.type === 'scale' ? 'Pick a value.' : 'Enter a value.');
       if (!e && t.type === 'scale' && t.defaultZero && values.v === 0) {
@@ -858,7 +954,13 @@ function renderTrackerEditor() {
         <label class="field"><span>Amount per tap</span><input name="step" inputmode="decimal" value="${num(d.step) ? d.step : 1}" placeholder="1"></label>
         <label class="field"><span>Daily goal <small>(optional)</small></span><input name="dailyGoal" inputmode="decimal" value="${num(d.dailyGoal) ? d.dailyGoal : ''}" placeholder="–"></label>
       </div>
-      <p class="hint left">Counters add up per day. The quick button on the Log screen adds the amount per tap (e.g. +250 ml for a glass); tap the tracker to log a different amount.</p>`;
+      <label class="check-line">
+        <input type="checkbox" name="trackKind" ${d.trackKind ? 'checked' : ''}>
+        <span><b>Record what each item was</b><small class="block">Free amount per item plus its type (e.g. 330 ml · Coffee). The dashboard breaks totals down by type.</small></span>
+      </label>
+      <label class="field"><span>Suggested types <small>(comma-separated)</small></span>
+        <input name="kinds" value="${esc((d.kinds?.length ? d.kinds : DEFAULT_DRINKS).join(', '))}"></label>
+      <p class="hint left">Counters add up per day. Without types, the quick button on Home adds the amount per tap; with types, it opens the form.</p>`;
   } else {
     typeBody = `<p class="hint left">One tap per day on the Log screen. Stats show completion rate and streaks.</p>`;
   }
@@ -911,6 +1013,10 @@ function readDraft(form) {
   if (fd.has('unit')) d.unit = String(fd.get('unit')).trim();
   if (fd.has('dailyGoal')) d.dailyGoal = parseNum(fd.get('dailyGoal'));
   if (fd.has('step')) d.step = parseNum(fd.get('step')) > 0 ? parseNum(fd.get('step')) : 1;
+  if (fd.has('kinds')) {
+    d.trackKind = fd.has('trackKind');
+    d.kinds = String(fd.get('kinds')).split(',').map((s) => s.trim()).filter(Boolean);
+  }
   for (const f of d.fields || []) {
     if (!fd.has('fn_' + f.id)) continue;
     f.name = String(fd.get('fn_' + f.id));
@@ -926,7 +1032,7 @@ function readDraft(form) {
 // `mine: true` = the default setup offered on first launch.
 const TEMPLATES = [
   { mine: true, name: 'Blood pressure', icon: '🩺', color: '#dc2626', type: 'number', fields: [['Systolic', 'mmHg', 0, 90, 120], ['Diastolic', 'mmHg', 0, 60, 80], ['Pulse', 'bpm', 0, null, null]] },
-  { mine: true, name: 'Liquid intake', icon: '🥤', color: '#0891b2', type: 'count', unit: 'ml', step: 250, dailyGoal: null },
+  { mine: true, name: 'Liquid intake', icon: '🥤', color: '#0891b2', type: 'count', unit: 'ml', step: 250, dailyGoal: null, trackKind: true, kindLabel: 'Drink', kinds: DEFAULT_DRINKS },
   { mine: true, name: 'Headache', icon: '🤕', color: '#7c3aed', type: 'scale', scaleMin: 1, scaleMax: 10, lowLabel: 'Mild', highLabel: 'Severe', defaultZero: true },
   { name: 'Weight', icon: '⚖️', color: '#2563eb', type: 'number', fields: [['Weight', 'kg', 1, null, null]] },
   { name: 'Blood glucose', icon: '🩸', color: '#d97706', type: 'number', fields: [['Glucose', 'mmol/L', 1, 4, 7.8]] },
@@ -943,7 +1049,10 @@ function fromTemplate(tp) {
     t.fields = tp.fields.map(([name, unit, decimals, targetMin, targetMax]) => ({ ...newField(name, unit), decimals, targetMin, targetMax }));
   }
   if (tp.type === 'scale') Object.assign(t, { scaleMin: tp.scaleMin, scaleMax: tp.scaleMax, lowLabel: tp.lowLabel, highLabel: tp.highLabel, defaultZero: !!tp.defaultZero });
-  if (tp.type === 'count') Object.assign(t, { unit: tp.unit, step: tp.step || 1, dailyGoal: tp.dailyGoal });
+  if (tp.type === 'count') {
+    Object.assign(t, { unit: tp.unit, step: tp.step || 1, dailyGoal: tp.dailyGoal });
+    if (tp.trackKind) Object.assign(t, { trackKind: true, kindLabel: tp.kindLabel, kinds: [...tp.kinds] });
+  }
   return t;
 }
 
@@ -997,7 +1106,7 @@ const stamp = () => S.dayKey(new Date());
 
 function exportCsv() {
   const q = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
-  const rows = [['date', 'time', 'tracker', 'value_name', 'value', 'unit', 'note'].join(',')];
+  const rows = [['date', 'time', 'tracker', 'value_name', 'value', 'unit', 'type', 'note'].join(',')];
   for (const e of store.entries().reverse()) {
     const t = store.tracker(e.trackerId);
     if (!t) continue;
@@ -1005,7 +1114,7 @@ function exportCsv() {
     for (const f of store.fieldsOf(t)) {
       const v = e.values?.[f.id];
       if (!num(v)) continue;
-      rows.push([S.dayKey(d), `${pad(d.getHours())}:${pad(d.getMinutes())}`, q(t.name), q(f.name), v, q(f.unit), q(e.note)].join(','));
+      rows.push([S.dayKey(d), `${pad(d.getHours())}:${pad(d.getMinutes())}`, q(t.name), q(f.name), v, q(f.unit), q(e.kind), q(e.note)].join(','));
     }
   }
   shareOrDownload(`trackstats-${stamp()}.csv`, rows.join('\n'), 'text/csv');
@@ -1065,6 +1174,20 @@ document.addEventListener('click', (ev) => {
     }
     case 'close-sheet':
       return closeSheet();
+    case 'pick-kind': {
+      const input = el.closest('.drink-row').querySelector('input[name*="kind__"]');
+      input.value = input.value === el.dataset.kind ? '' : el.dataset.kind;
+      syncKindChips(input);
+      const amount = el.closest('.drink-row').querySelector('input[name*="v__"]');
+      if (!amount.value) amount.focus();
+      return;
+    }
+    case 'add-drink': {
+      const box = $(`.drinks[data-tracker="${el.dataset.tracker}"]`, sheet);
+      box.insertAdjacentHTML('beforeend', drinkRow(store.tracker(el.dataset.tracker), el.dataset.prefix, box.children.length));
+      box.lastElementChild.querySelector('input').focus();
+      return;
+    }
     case 'new-tracker':
       return openTrackerEditor();
     case 'edit-tracker':
@@ -1165,6 +1288,14 @@ document.addEventListener('change', (ev) => {
   }
 });
 
+function syncKindChips(input) {
+  const v = input.value.trim().toLowerCase();
+  $$('.kchip', input.closest('.drink-row')).forEach((c) => c.classList.toggle('on', c.dataset.kind.toLowerCase() === v));
+}
+document.addEventListener('input', (ev) => {
+  if (ev.target.name?.includes('kind__')) syncKindChips(ev.target);
+});
+
 $$('.tabbar button').forEach((b) =>
   b.addEventListener('click', () => {
     ui.tab = b.dataset.tab;
@@ -1177,6 +1308,9 @@ $$('.tabbar button').forEach((b) =>
 // One-time upgrade: Headache trackers created before "no entry = 0" existed get it switched on.
 for (const t of store.trackers()) {
   if (t.type === 'scale' && t.name === 'Headache' && t.defaultZero === undefined) store.saveTracker({ ...t, defaultZero: true });
+  if (t.type === 'count' && t.name === 'Liquid intake' && t.trackKind === undefined) {
+    store.saveTracker({ ...t, trackKind: true, kindLabel: 'Drink', kinds: [...DEFAULT_DRINKS] });
+  }
 }
 
 store.onChange(render);

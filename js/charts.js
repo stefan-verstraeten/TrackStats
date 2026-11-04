@@ -37,11 +37,13 @@ function frame(inner, label) {
 
 function xAxis(xStart, xEnd, sx) {
   const mid = new Date((xStart.getTime() + xEnd.getTime()) / 2);
+  const seen = new Set();
   return [
     [xStart, 'start'],
-    [mid, 'middle'],
     [xEnd, 'end'],
+    [mid, 'middle'],
   ]
+    .filter(([d]) => !seen.has(shortDate(d)) && seen.add(shortDate(d)))
     .map(([d, anchor]) => `<text class="ax" x="${sx(d)}" y="${H - 8}" text-anchor="${anchor}">${shortDate(d)}</text>`)
     .join('');
 }

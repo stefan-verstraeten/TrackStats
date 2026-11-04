@@ -1,6 +1,6 @@
 // TrackStats service worker: makes the app work offline.
 // Bump CACHE whenever you ship changes so phones pick up the new files.
-const CACHE = 'trackstats-v3';
+const CACHE = 'trackstats-v4';
 const ASSETS = [
   './',
   'index.html',
@@ -36,7 +36,7 @@ self.addEventListener('fetch', (event) => {
     const cache = await caches.open(CACHE);
     try {
       const res = await Promise.race([
-        fetch(req),
+        fetch(req, { cache: 'no-cache' }), // revalidate with the server, so updates arrive immediately
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
       ]);
       if (res.ok) cache.put(req, res.clone());

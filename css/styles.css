@@ -341,3 +341,24 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
 .field-stats .tile { padding: 8px 9px; }
 .field-stats .tv { font-size: 1.12rem; }
 .field-stats .tl { font-size: 0.66rem; }
+
+/* ---- free-amount items with a type (drinks) ---- */
+.drinks { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+.drink-row { display: grid; gap: 8px; padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
+.drink-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.drink-top { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 10px; }
+.kchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.kchip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 11px; font-size: 0.85rem; }
+.kchip.on { background: var(--c, var(--accent)); border-color: transparent; color: #fff; font-weight: 600; }
+.btn.slim { min-height: 38px; padding: 6px 12px; margin-top: 0; font-size: 0.92rem; }
+.sheet-body .drink-row .kchip { background: var(--surface-2); }
+.sheet-body .drink-row .kchip.on { background: var(--c, var(--accent)); }
+
+.kinds { display: grid; gap: 7px; margin-top: 12px; }
+.kind-row { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 0.88rem; }
+.kname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kbar { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.kbar i { display: block; height: 100%; border-radius: 4px; }
+.kval { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+.kval small { font-weight: 400; }
+.sub-h { margin: 14px 0 0; font-size: 0.92rem; }
