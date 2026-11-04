@@ -116,6 +116,12 @@ export function saveEntry(e) {
   persist();
 }
 
+/** Save several new entries with a single write. */
+export function saveEntries(list) {
+  state.entries.push(...list);
+  persist();
+}
+
 export function deleteEntry(id) {
   state.entries = state.entries.filter((e) => e.id !== id);
   persist();

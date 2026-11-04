@@ -62,8 +62,9 @@ function toast(msg) {
 // ---------- UI state (remembered per device) ----------
 
 const UI_KEY = 'trackstats.ui';
+const DASH_RANGE_VALUES = [3, 7, 30, 90, 365];
 const ui = Object.assign(
-  { tab: 'today', statsTracker: null, statsRange: 30, historyFilter: 'all', historyLimit: 150 },
+  { tab: 'today', dashMode: 'day', dashRange: 7, dashDay: null, tableAll: false, historyFilter: 'all', historyLimit: 150 },
   (() => {
     try {
       return JSON.parse(localStorage.getItem(UI_KEY)) || {};
@@ -73,9 +74,12 @@ const ui = Object.assign(
   })()
 );
 ui.historyLimit = 150;
+ui.dashDay = null; // dashboard always opens on today
+if (ui.tab === 'stats') ui.tab = 'dashboard';
+if (!DASH_RANGE_VALUES.includes(ui.dashRange)) ui.dashRange = 7;
 function saveUi() {
   try {
-    localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, statsTracker: ui.statsTracker, statsRange: ui.statsRange, historyFilter: ui.historyFilter }));
+    localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, dashMode: ui.dashMode, dashRange: ui.dashRange, historyFilter: ui.historyFilter }));
   } catch {
     /* ignore */
   }
@@ -84,15 +88,15 @@ function saveUi() {
 // ---------- value formatting ----------
 
 /** "128/82 mmHg · 64 bpm" style text for one entry. */
-function formatEntry(t, e) {
+function formatEntry(t, e, units = true) {
   const v = e.values || {};
   switch (t.type) {
     case 'check':
       return v.v === 1 ? 'Yes' : 'No';
     case 'count':
-      return `${fmt(v.v)}${t.unit ? ' ' + esc(t.unit) : ''}`;
+      return `${fmt(v.v)}${units && t.unit ? ' ' + esc(t.unit) : ''}`;
     case 'scale':
-      return `${fmt(v.v)} / ${t.scaleMax}`;
+      return units ? `${fmt(v.v)} / ${t.scaleMax}` : fmt(v.v);
     default: {
       const groups = [];
       for (const f of store.fieldsOf(t)) {
@@ -103,7 +107,7 @@ function formatEntry(t, e) {
         else groups.push({ unit: f.unit, vals: [val] });
       }
       if (!groups.length) return '–';
-      return groups.map((g) => g.vals.join('/') + (g.unit ? ' ' + esc(g.unit) : '')).join(' · ');
+      return groups.map((g) => g.vals.join('/') + (units && g.unit ? ' ' + esc(g.unit) : '')).join(' · ');
     }
   }
 }
@@ -123,6 +127,10 @@ function todaySummary(t) {
     const st = streak > 1 ? ` · ${streak}-day streak` : '';
     return { text: (yes ? '<b>Done today</b>' : 'Not yet today') + st, done: yes };
   }
+  if (t.type === 'scale' && t.defaultZero) {
+    const v = scaleVals(today);
+    return { text: `Today: <b>${v.length ? Math.max(...v) : 0}</b> / ${t.scaleMax}${v.length ? '' : ' · none logged'}`, done: v.length > 0 };
+  }
   if (!list.length) return { text: 'No entries yet' };
   const last = list[0];
   return { text: `<b>${formatEntry(t, last)}</b> · ${relTime(new Date(last.ts))}`, done: today.length > 0 };
@@ -139,7 +147,8 @@ function setTop(title, actions = '') {
 
 function render() {
   $$('.tabbar button').forEach((b) => b.setAttribute('aria-current', b.dataset.tab === ui.tab ? 'page' : 'false'));
-  ({ today: renderToday, history: renderHistory, stats: renderStats, trackers: renderTrackers })[ui.tab]();
+  const views = { today: renderToday, dashboard: renderDashboard, history: renderHistory, trackers: renderTrackers };
+  (views[ui.tab] || renderToday)();
 }
 
 function emptyState() {
@@ -163,6 +172,17 @@ function renderToday() {
     return;
   }
   view.innerHTML = `
+    <div class="home-actions">
+      <button class="action primary" data-act="new-entry">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span><b>New entry</b><small>${list.map((t) => esc(t.name)).join(', ')}</small></span>
+      </button>
+      <button class="action" data-act="go-dashboard">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16M6 15l4-5 4 3 5-7"/></svg>
+        <span><b>Dashboard</b><small>Day view, trends &amp; data</small></span>
+      </button>
+    </div>
+    <h3 class="section">Today</h3>
     <div class="cards">
       ${list
         .map((t) => {
@@ -191,7 +211,7 @@ function renderToday() {
         })
         .join('')}
     </div>
-    <p class="hint">Tap a tracker to log a value with date, time and note.</p>`;
+    <p class="hint">Tap a tracker to log just that one; the round button is a quick add.</p>`;
 }
 
 function renderHistory() {
@@ -228,137 +248,309 @@ function renderHistory() {
       html += `<h3 class="day">${dayLabel(d)}</h3><div class="card list">`;
       curDay = k;
     }
-    html += `
-      <button class="row" data-act="edit-entry" data-id="${e.id}" style="--c:${t.color}">
-        <span class="ticon sm">${esc(t.icon || '•')}</span>
-        <span class="rbody">
-          <span class="rtop"><span class="rname">${esc(t.name)}</span><span class="rval">${formatEntry(t, e)}</span></span>
-          <span class="rnote">${timeOf(d)}${e.note ? ` · ${esc(e.note)}` : ''}</span>
-        </span>
-      </button>`;
+    html += entryRow(e);
   }
   html += '</div></div>';
   if (all.length > shown.length) html += `<button class="btn block" data-act="more-history">Show more (${all.length - shown.length} older)</button>`;
   view.innerHTML = html;
 }
 
-const RANGES = [
-  [7, '7D'],
-  [30, '30D'],
-  [90, '90D'],
-  [365, '1Y'],
-  ['all', 'All'],
-];
+// ---------- daily aggregates ----------
+// One place that defines what a tracker's "value for the day" is.
+// Extend here when adding new daily aggregates.
 
-function tile(label, value, sub = '') {
-  return `<div class="tile"><span class="tl">${label}</span><span class="tv">${value}</span>${sub ? `<span class="ts">${sub}</span>` : ''}</div>`;
+function tile(label, value, sub = '', cls = '') {
+  return `<div class="tile ${cls}"><span class="tl">${label}</span><span class="tv">${value}</span>${sub ? `<span class="ts">${sub}</span>` : ''}</div>`;
 }
 
-function renderStats() {
+/** Map dayKey -> entries. */
+function byDay(list) {
+  const m = new Map();
+  for (const e of list) {
+    const k = S.dayKey(e.ts);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(e);
+  }
+  return m;
+}
+
+function scaleVals(list) {
+  return list.map((e) => e.values?.v).filter(num);
+}
+
+function outOfTarget(f, v) {
+  return num(v) && ((num(f.targetMin) && v < f.targetMin) || (num(f.targetMax) && v > f.targetMax));
+}
+
+/**
+ * Aggregate of one tracker for one day:
+ *  measurement -> per value: mean, min, max, n
+ *  counter     -> total
+ *  scale       -> highest and mean (0 when "no entry = 0" and nothing was logged)
+ *  yes/no      -> done or not
+ */
+function dayAggregate(t, list = []) {
+  if (t.type === 'number') {
+    return { n: list.length, fields: store.fieldsOf(t).map((f) => ({ f, st: S.fieldStats(S.points(list, f.id), f) })) };
+  }
+  if (t.type === 'count') {
+    return { n: list.length, total: list.reduce((a, e) => a + (num(e.values?.v) ? e.values.v : 0), 0) };
+  }
+  if (t.type === 'scale') {
+    const v = scaleVals(list);
+    if (!v.length) return { n: 0, max: t.defaultZero ? 0 : null, mean: t.defaultZero ? 0 : null };
+    return { n: v.length, max: Math.max(...v), mean: v.reduce((a, b) => a + b, 0) / v.length };
+  }
+  return { n: list.length, yes: list.some((e) => e.values?.v === 1) };
+}
+
+/** Compact text of a day aggregate (table cells). */
+function aggregateText(t, a) {
+  if (t.type === 'number') {
+    if (!a.n) return '–';
+    const values = {};
+    a.fields.forEach(({ f, st }) => st && (values[f.id] = st.mean));
+    return formatEntry(t, { values }, false);
+  }
+  if (t.type === 'count') return fmt(a.total);
+  if (t.type === 'scale') return a.max == null ? '–' : fmt(a.max);
+  return a.yes ? '✓' : '–';
+}
+
+function aggregateClass(t, a) {
+  if (t.type === 'number') return a.fields.some(({ f, st }) => st && outOfTarget(f, st.mean)) ? 'warn' : a.n ? '' : 'dim';
+  if (t.type === 'scale') return a.n ? (a.max > 0 ? 'strong' : '') : 'dim';
+  return a.n ? '' : 'dim';
+}
+
+/** Short unit label for a table column header. */
+function columnUnit(t) {
+  if (t.type === 'count') return t.unit || 'total';
+  if (t.type === 'scale') return `0–${t.scaleMax}`;
+  if (t.type === 'check') return 'done';
+  return store.fieldsOf(t)[0]?.unit || '';
+}
+
+function entryRow(e) {
+  const t = store.tracker(e.trackerId);
+  if (!t) return '';
+  const d = new Date(e.ts);
+  return `
+    <button class="row" data-act="edit-entry" data-id="${e.id}" style="--c:${t.color}">
+      <span class="ticon sm">${esc(t.icon || '•')}</span>
+      <span class="rbody">
+        <span class="rtop"><span class="rname">${esc(t.name)}</span><span class="rval">${formatEntry(t, e)}</span></span>
+        <span class="rnote">${timeOf(d)}${e.note ? ` · ${esc(e.note)}` : ''}</span>
+      </span>
+    </button>`;
+}
+
+function cardTitle(t, sub) {
+  return `<h3 class="card-title"><span class="ticon sm">${esc(t.icon || '•')}</span><span>${esc(t.name)}<small class="block">${sub}</small></span></h3>`;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// ---------- dashboard ----------
+
+const DASH_RANGES = [
+  [3, '3D'],
+  [7, '1W'],
+  [30, '1M'],
+  [90, '3M'],
+  [365, '1Y'],
+];
+
+function renderDashboard() {
+  setTop('Dashboard');
   const list = store.trackers();
-  setTop('Stats');
   if (!list.length) {
     view.innerHTML = emptyState();
     return;
   }
-  let t = store.tracker(ui.statsTracker) || list[0];
-  ui.statsTracker = t.id;
-  const all = store.entries(t.id);
-  // Never start the period before the first entry, so long ranges don't count days before tracking began.
-  let start = S.rangeStart(ui.statsRange, all);
-  const firstDay = all.length ? S.startOfDay(all[all.length - 1].ts) : null;
-  if (firstDay && firstDay > start) start = firstDay < S.addDays(S.startOfDay(new Date()), -6) ? firstDay : S.addDays(S.startOfDay(new Date()), -6);
-  const end = S.endOfDay(new Date());
-  const period = S.inPeriod(all, start, end);
-
-  let html = `
-    <div class="chips" role="tablist">
-      ${list.map((x) => `<button class="chip" role="tab" aria-selected="${x.id === t.id}" data-act="stats-tracker" data-id="${x.id}" style="--c:${x.color}">${esc(x.icon)} ${esc(x.name)}</button>`).join('')}
-    </div>
-    <div class="seg" role="group" aria-label="Period">
-      ${RANGES.map(([r, l]) => `<button data-act="stats-range" data-range="${r}" aria-pressed="${String(ui.statsRange) === String(r)}">${l}</button>`).join('')}
+  const modeSeg = `
+    <div class="seg" role="group" aria-label="View">
+      <button data-act="dash-mode" data-mode="day" aria-pressed="${ui.dashMode === 'day'}">Day</button>
+      <button data-act="dash-mode" data-mode="period" aria-pressed="${ui.dashMode === 'period'}">Multi-day</button>
     </div>`;
+  view.innerHTML = modeSeg + (ui.dashMode === 'day' ? dayView(list) : periodView(list));
+}
 
-  const days = S.eachDay(start, end);
-  const periodLabel = `${start.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })} – today · ${days.length} days · ${period.length} entries`;
+// ---- single day ----
 
-  if (t.type === 'number' || t.type === 'scale') {
+function daySummaryCard(t, list) {
+  const a = dayAggregate(t, list);
+  let sub = '';
+  let tiles = '';
+  if (t.type === 'number') {
+    sub = a.n ? `${plural(a.n, 'reading', 'readings')} · daily average` : 'No readings';
+    tiles = a.fields
+      .filter((x) => x.st)
+      .map(({ f, st }) =>
+        tile(esc(f.name), fmt(st.mean, f.decimals), [esc(f.unit), st.min !== st.max ? `${fmt(st.min, f.decimals)}–${fmt(st.max, f.decimals)}` : ''].filter(Boolean).join(' · '), outOfTarget(f, st.mean) ? 'warn' : '')
+      )
+      .join('');
+  } else if (t.type === 'count') {
+    sub = a.n ? plural(a.n, 'entry', 'entries') : 'Nothing logged';
+    const goal = t.dailyGoal > 0 ? `${pct(a.total / t.dailyGoal)} of ${fmt(t.dailyGoal)} goal` : '';
+    tiles = tile('Total', fmt(a.total), [esc(t.unit), goal].filter(Boolean).join(' · '));
+  } else if (t.type === 'scale') {
+    sub = a.n ? plural(a.n, 'score', 'scores') : t.defaultZero ? 'No score logged — counts as 0' : 'No score';
+    tiles = a.max == null ? '' : tile('Highest', fmt(a.max), `of ${t.scaleMax}`) + (a.n > 1 ? tile('Average', fmt(a.mean, 1)) : '');
+  } else {
+    tiles = tile('Done', a.yes ? 'Yes' : 'No');
+  }
+  return `<section class="card stat-block" style="--c:${t.color}">${cardTitle(t, sub)}${tiles ? `<div class="tiles">${tiles}</div>` : ''}</section>`;
+}
+
+function dayView(list) {
+  const todayKey = S.dayKey(new Date());
+  if (!ui.dashDay || ui.dashDay > todayKey) ui.dashDay = todayKey;
+  const key = ui.dashDay;
+  const day = new Date(key + 'T12:00:00');
+  const dayEntries = store.entries().filter((e) => S.dayKey(e.ts) === key).reverse(); // oldest first
+  const longDate = day.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  return `
+    <div class="daynav">
+      <button class="icon-btn" data-act="day-shift" data-d="-1" aria-label="Previous day">‹</button>
+      <label class="daypick"><b>${dayLabel(day)}</b><small>${longDate}</small>
+        <input type="date" data-act="day-pick" value="${key}" max="${todayKey}" aria-label="Pick a day">
+      </label>
+      <button class="icon-btn" data-act="day-shift" data-d="1" aria-label="Next day" ${key === todayKey ? 'disabled' : ''}>›</button>
+    </div>
+    ${list.map((t) => daySummaryCard(t, dayEntries.filter((e) => e.trackerId === t.id))).join('')}
+    <h3 class="section">All entries</h3>
+    ${dayEntries.length ? `<div class="card list">${dayEntries.map(entryRow).join('')}</div>` : `<div class="card pad muted small">Nothing logged on this day.</div>`}
+    <button class="btn primary block" data-act="new-entry" data-day="${key}">＋ New entry for this day</button>`;
+}
+
+// ---- multiple days ----
+
+function periodCard(t, start, end, dayMap) {
+  const period = [...dayMap.values()].flat();
+  let body = '';
+  if (t.type === 'number') {
     const fields = store.fieldsOf(t);
     const series = [];
     const bands = [];
-    let sections = '';
     let anyDense = false;
+    let stats = '';
     fields.forEach((f, i) => {
       const pts = S.points(period, f.id);
-      const st = S.fieldStats(pts, t.type === 'scale' ? {} : f);
+      const st = S.fieldStats(pts, f);
       const color = seriesColor(t, i);
       const dense = pts.length > 120;
       anyDense ||= dense;
       series.push({ name: f.name, color, points: dense ? S.dailyMeans(pts) : pts });
       if (num(f.targetMin) || num(f.targetMax)) bands.push({ min: f.targetMin, max: f.targetMax, color });
-      const dp = t.type === 'scale' ? 1 : f.decimals;
-      const unit = ''; // unit is shown in the section heading; tiles stay compact
-      const change = st && st.n > 1 ? `${st.change > 0 ? '+' : ''}${fmt(st.change, dp)}` : '–';
-      sections += `
-        <section class="card stat-block">
-          <h3><span class="dot" style="background:${color}"></span>${esc(fields.length > 1 || t.type === 'number' ? f.name : 'Score')}${f.unit ? ` <small>(${esc(f.unit)})</small>` : ''}</h3>
-          ${
-            st
-              ? `<div class="tiles">
-                  ${tile('Average', fmt(st.mean, dp) + unit, `± ${fmt(st.sd, dp)}`)}
-                  ${tile('Latest', fmt(st.latest, dp) + unit, `change ${change}`)}
-                  ${tile('Lowest', fmt(st.min, dp) + unit)}
-                  ${tile('Highest', fmt(st.max, dp) + unit)}
-                  ${st.inTarget != null ? tile('In target', pct(st.inTarget), targetText(f)) : tile('Entries', fmt(st.n))}
-                </div>`
-              : '<p class="muted">No values in this period.</p>'
-          }
-        </section>`;
+      if (!st) return;
+      const dp = f.decimals;
+      stats += `
+        <div class="field-stats">
+          <h4><span class="dot" style="background:${color}"></span>${esc(f.name)} <small>${esc(f.unit)}</small></h4>
+          <div class="tiles">
+            ${tile('Average', fmt(st.mean, dp), `± ${fmt(st.sd, dp)}`, outOfTarget(f, st.mean) ? 'warn' : '')}
+            ${tile('Low', fmt(st.min, dp))}
+            ${tile('High', fmt(st.max, dp))}
+            ${st.inTarget != null ? tile('In target', pct(st.inTarget), targetText(f)) : tile('Latest', fmt(st.latest, dp))}
+          </div>
+        </div>`;
     });
-    html += `
-      <section class="card chart-card">
-        <p class="muted small">${periodLabel}${anyDense ? ' · daily averages' : ''}</p>
-        ${lineChart({ series, xStart: start, xEnd: end, bands, label: `${t.name} over time` })}
-        ${fields.length > 1 ? `<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : ''}
-      </section>
-      ${sections}`;
+    body =
+      lineChart({ series, xStart: start, xEnd: end, bands, label: `${t.name} over time` }) +
+      (fields.length > 1 ? `<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : '') +
+      (anyDense ? '<p class="muted small center">Showing daily averages</p>' : '') +
+      (stats || '<p class="muted small">No readings in this period.</p>');
   } else if (t.type === 'count') {
     const daily = S.dailyTotals(period, start, end);
     const st = S.countStats(daily, t.dailyGoal);
-    const bars = daily.length > 92 ? S.weekly(daily) : daily;
-    const unit = '';
-    html += `
-      <section class="card chart-card">
-        <p class="muted small">${periodLabel}${daily.length > 92 ? ' · weekly totals' : ''}</p>
-        ${barChart({ bars, color: t.color, goal: daily.length > 92 ? (t.dailyGoal || 0) * 7 : t.dailyGoal, xStart: start, xEnd: end, label: `${t.name} per day` })}
-      </section>
-      <section class="card stat-block">
-        <h3><span class="dot" style="background:${t.color}"></span>${esc(t.name)}${t.unit ? ` <small>(${esc(t.unit)})</small>` : ''}</h3>
-        <div class="tiles">
-          ${tile('Per day', fmt(st.perDay, 1) + unit)}
-          ${tile('Total', fmt(st.total) + unit)}
-          ${tile('Best day', fmt(st.best) + unit)}
-          ${tile('Active days', `${st.activeDays}<small> / ${st.days}</small>`)}
-          ${st.goalDays != null ? tile('Goal reached', `${st.goalDays}<small> days</small>`, `goal ${fmt(t.dailyGoal)}/day`) : ''}
-        </div>
-      </section>`;
+    const weeklyMode = daily.length > 92;
+    const dp = stepOf(t) >= 10 ? 0 : 1;
+    body =
+      barChart({ bars: weeklyMode ? S.weekly(daily) : daily, color: t.color, goal: weeklyMode ? (t.dailyGoal || 0) * 7 : t.dailyGoal, xStart: start, xEnd: end, label: `${t.name} per day` }) +
+      (weeklyMode ? '<p class="muted small center">Weekly totals</p>' : '') +
+      `<div class="tiles">
+        ${tile('Per day', fmt(st.perDay, dp), esc(t.unit))}
+        ${tile('Best day', fmt(st.best), esc(t.unit))}
+        ${st.goalDays != null ? tile('Goal met', `${st.goalDays}<small> / ${st.days}</small>`, 'days') : tile('Days logged', `${st.activeDays}<small> / ${st.days}</small>`)}
+      </div>`;
+  } else if (t.type === 'scale') {
+    const daily = S.eachDay(start, end)
+      .map((d) => {
+        const v = scaleVals(dayMap.get(S.dayKey(d)) || []);
+        return { t: new Date(d.getTime() + 12 * 3600e3), v: v.length ? Math.max(...v) : t.defaultZero ? 0 : null };
+      })
+      .filter((p) => num(p.v));
+    const vals = daily.map((p) => p.v);
+    const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    const above = vals.filter((v) => v > 0).length;
+    body =
+      lineChart({ series: [{ name: t.name, color: t.color, points: daily }], xStart: start, xEnd: end, yRange: [t.defaultZero ? 0 : t.scaleMin, t.scaleMax], label: `${t.name} per day` }) +
+      `<div class="tiles">
+        ${tile('Daily avg', fmt(mean, 1), t.defaultZero ? 'incl. 0 days' : '')}
+        ${tile('Highest', vals.length ? fmt(Math.max(...vals)) : '–', `of ${t.scaleMax}`)}
+        ${t.defaultZero ? tile('Days > 0', `${above}<small> / ${vals.length}</small>`) : tile('Days scored', fmt(vals.length))}
+      </div>`;
   } else {
-    const st = S.checkStats(all, start, end);
-    html += `
-      <section class="card chart-card">
-        <p class="muted small">${periodLabel}</p>
-        ${calendar({ days, doneSet: st.doneSet, keyOf: S.dayKey, color: t.color, label: `${t.name} calendar` })}
-      </section>
-      <section class="card stat-block">
-        <div class="tiles">
-          ${tile('Done', pct(st.pct), `${st.done} of ${st.days} days`)}
-          ${tile('Current streak', `${st.streak}<small> days</small>`)}
-          ${tile('Best streak', `${st.best}<small> days</small>`)}
-        </div>
-      </section>`;
+    const st = S.checkStats(store.entries(t.id), start, end);
+    body =
+      calendar({ days: S.eachDay(start, end), doneSet: st.doneSet, keyOf: S.dayKey, color: t.color, label: `${t.name} calendar` }) +
+      `<div class="tiles">
+        ${tile('Done', pct(st.pct), `${st.done} of ${st.days} days`)}
+        ${tile('Streak', `${st.streak}<small> d</small>`, `best ${st.best}`)}
+      </div>`;
   }
-  view.innerHTML = html;
-  $('.chip[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  return `<section class="card pcard" style="--c:${t.color}">${cardTitle(t, plural(period.length, 'entry', 'entries'))}${body}</section>`;
+}
+
+function periodView(list) {
+  const today = S.startOfDay(new Date());
+  const end = S.endOfDay(today);
+  let start = S.addDays(today, -(ui.dashRange - 1));
+  // Don't count days before tracking began.
+  const all = store.entries();
+  let clamped = false;
+  if (all.length) {
+    const first = S.startOfDay(all[all.length - 1].ts);
+    if (first > start) {
+      start = first;
+      clamped = true;
+    }
+  }
+  const days = S.eachDay(start, end);
+  const groups = new Map(list.map((t) => [t.id, byDay(S.inPeriod(store.entries(t.id), start, end))]));
+  const rows = days.slice().reverse();
+  const shown = ui.tableAll ? rows : rows.slice(0, 31);
+  const startLabel = start.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: start.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+
+  return `
+    <div class="seg" role="group" aria-label="Period">
+      ${DASH_RANGES.map(([r, l]) => `<button data-act="dash-range" data-range="${r}" aria-pressed="${ui.dashRange === r}">${l}</button>`).join('')}
+    </div>
+    <p class="muted small period-note">${startLabel} – today · ${plural(days.length, 'day', 'days')}${clamped ? ' (since tracking began)' : ''}</p>
+    ${list.map((t) => periodCard(t, start, end, groups.get(t.id))).join('')}
+    <h3 class="section">Day by day</h3>
+    <div class="card table-wrap">
+      <table class="daytable">
+        <thead><tr><th>Day</th>${list.map((t) => `<th title="${esc(t.name)}">${esc(t.icon)}<small>${esc(columnUnit(t))}</small></th>`).join('')}</tr></thead>
+        <tbody>
+          ${shown
+            .map((d) => {
+              const k = S.dayKey(d);
+              const cells = list
+                .map((t) => {
+                  const a = dayAggregate(t, groups.get(t.id).get(k));
+                  return `<td class="${aggregateClass(t, a)}">${aggregateText(t, a)}</td>`;
+                })
+                .join('');
+              return `<tr data-act="goto-day" data-day="${k}"><td>${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</td>${cells}</tr>`;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+    ${rows.length > shown.length ? `<button class="btn block" data-act="table-all">Show all ${rows.length} days</button>` : ''}
+    <p class="hint">Per day: measurements are averaged, counters are summed, scores show the day’s highest${list.some((t) => t.defaultZero) ? ' (0 when none logged)' : ''}. Red = average outside target. Tap a day to open it.</p>`;
 }
 
 function targetText(f) {
@@ -445,76 +637,147 @@ sheet.addEventListener('click', (ev) => {
   if (ev.target === sheet) closeSheet(); // tap on backdrop
 });
 
-// ---- log / edit entry ----
+// ---- value inputs (shared by the single-tracker form and the combined "New entry" form) ----
+
+/**
+ * Inputs for one tracker's values, named `${prefix}${fieldId}`.
+ * fresh: combined form — nothing preselected except a 0 for "no entry = 0" scales.
+ */
+function valueInputs(t, vals, prefix, { fresh = false, autofocus = false, hintLast = false } = {}) {
+  if (t.type === 'number') {
+    const last = hintLast ? store.entries(t.id)[0] : null;
+    const fields = store.fieldsOf(t);
+    const cols = fields.length >= 3 ? 'grid3' : fields.length === 2 ? 'grid2' : '';
+    return `<div class="${cols}">${fields
+      .map(
+        (f, i) => `
+        <label class="field"><span>${esc(f.name)}${f.unit ? ` <small>${esc(f.unit)}</small>` : ''}</span>
+          <input name="${prefix}${f.id}" type="text" inputmode="decimal" autocomplete="off" ${autofocus && i === 0 ? 'autofocus' : ''}
+            value="${num(vals[f.id]) ? vals[f.id] : ''}" placeholder="${last && num(last.values?.[f.id]) ? 'last ' + fmt(last.values[f.id], f.decimals) : ''}">
+        </label>`
+      )
+      .join('')}</div>`;
+  }
+  if (t.type === 'scale') {
+    const lo = t.defaultZero ? 0 : t.scaleMin;
+    const cur = num(vals.v) ? vals.v : t.defaultZero ? 0 : null;
+    let btns = '';
+    for (let v = lo; v <= t.scaleMax; v++) {
+      btns += `<label class="scale-opt"><input type="radio" name="${prefix}v" value="${v}" ${cur === v ? 'checked' : ''}><span>${v}</span></label>`;
+    }
+    const low = t.defaultZero ? `0 = none${t.lowLabel ? ` · ${t.scaleMin} = ${t.lowLabel}` : ''}` : t.lowLabel || '';
+    return `
+      <div class="scale" style="--n:${t.scaleMax - lo + 1}">${btns}</div>
+      <div class="scale-labels"><small>${esc(low)}</small><small>${esc(t.highLabel || '')}</small></div>`;
+  }
+  if (t.type === 'check') {
+    const cur = num(vals.v) ? vals.v : fresh ? null : 1;
+    return `
+      <div class="seg big">
+        ${fresh ? `<label><input type="radio" name="${prefix}v" value="" ${cur == null ? 'checked' : ''}><span>–</span></label>` : ''}
+        <label><input type="radio" name="${prefix}v" value="1" ${cur === 1 ? 'checked' : ''}><span>Yes</span></label>
+        <label><input type="radio" name="${prefix}v" value="0" ${cur === 0 ? 'checked' : ''}><span>No</span></label>
+      </div>`;
+  }
+  const step = stepOf(t);
+  const v = num(vals.v) ? vals.v : fresh ? '' : step;
+  return `
+    <div class="stepper">
+      <button type="button" data-act="step" data-d="${-step}" aria-label="Less">−</button>
+      <input name="${prefix}v" type="text" inputmode="decimal" autocomplete="off" value="${v}" placeholder="0" aria-label="${esc(t.name)} amount">
+      <button type="button" data-act="step" data-d="${step}" aria-label="More">+</button>
+    </div>
+    ${t.unit ? `<small class="block center">${esc(t.unit)} · − / + change by ${fmt(step)}</small>` : ''}`;
+}
+
+function readValues(t, fd, prefix) {
+  const values = {};
+  for (const f of store.fieldsOf(t)) {
+    const v = parseNum(fd.get(prefix + f.id));
+    if (v != null) values[f.id] = v;
+  }
+  return values;
+}
+
+function whenInputs(d) {
+  return `
+    <div class="grid2">
+      <label class="field"><span>Date</span><input name="date" type="date" value="${S.dayKey(d)}" max="${S.dayKey(new Date())}" required></label>
+      <label class="field"><span>Time</span><input name="time" type="time" value="${pad(d.getHours())}:${pad(d.getMinutes())}" required></label>
+    </div>`;
+}
+
+function readWhen(fd) {
+  const ts = new Date(`${fd.get('date')}T${fd.get('time') || '12:00'}`);
+  return isNaN(ts) ? null : ts;
+}
+
+// ---- combined new entry (all trackers in one form) ----
+
+function openNewEntry(dayKey) {
+  const list = store.trackers();
+  if (!list.length) return toast('Create a tracker first');
+  const now = new Date();
+  // Date defaults to today (or the day open in the dashboard); time defaults to now.
+  const when = dayKey ? new Date(`${dayKey}T${pad(now.getHours())}:${pad(now.getMinutes())}`) : now;
+  const body = `
+    ${whenInputs(when)}
+    ${list
+      .map(
+        (t) => `
+      <section class="entry-sec" style="--c:${t.color}">
+        <h3><span class="ticon sm">${esc(t.icon || '•')}</span>${esc(t.name)}</h3>
+        ${valueInputs(t, {}, `x_${t.id}_`, { fresh: true })}
+      </section>`
+      )
+      .join('')}
+    <label class="field"><span>Note <small>(optional, saved with each value)</small></span><textarea name="note" rows="2"></textarea></label>
+    <p class="form-error" hidden></p>
+    <p class="hint left">Fill in one or more categories; empty ones are skipped.</p>`;
+
+  openSheet('New entry', body, {
+    onSubmit(fd, form) {
+      const ts = readWhen(fd);
+      if (!ts) return formError(form, 'Pick a valid date and time.');
+      const note = String(fd.get('note') || '').trim();
+      const batch = [];
+      for (const t of list) {
+        const values = readValues(t, fd, `x_${t.id}_`);
+        if (!Object.keys(values).length) continue;
+        if (t.type === 'scale' && t.defaultZero && values.v === 0) continue; // 0 is the default, nothing to store
+        if (t.type === 'count' && !(values.v > 0)) continue;
+        batch.push({ id: store.uid(), trackerId: t.id, ts: ts.toISOString(), values, note });
+      }
+      if (!batch.length) return formError(form, 'Fill in at least one category.');
+      store.saveEntries(batch);
+      toast(`Saved ${batch.map((e) => store.tracker(e.trackerId).name).join(', ')}`);
+    },
+  });
+}
+
+// ---- log / edit one entry ----
 
 function openLog(trackerId, entryId) {
   const e = entryId ? store.entry(entryId) : null;
   const t = store.tracker(e ? e.trackerId : trackerId);
   if (!t) return;
-  const vals = e?.values || {};
-  const last = store.entries(t.id)[0];
-  let inputs = '';
-  if (t.type === 'number') {
-    inputs = store.fieldsOf(t)
-      .map(
-        (f, i) => `
-        <label class="field">
-          <span>${esc(f.name)}${f.unit ? ` <small>(${esc(f.unit)})</small>` : ''}</span>
-          <input name="f_${f.id}" type="text" inputmode="decimal" autocomplete="off" ${i === 0 ? 'autofocus' : ''}
-            value="${num(vals[f.id]) ? vals[f.id] : ''}" placeholder="${last && num(last.values?.[f.id]) ? 'last: ' + fmt(last.values[f.id], f.decimals) : ''}">
-        </label>`
-      )
-      .join('');
-  } else if (t.type === 'scale') {
-    const cur = num(vals.v) ? vals.v : null;
-    let btns = '';
-    for (let v = t.scaleMin; v <= t.scaleMax; v++) {
-      btns += `<label class="scale-opt"><input type="radio" name="f_v" value="${v}" ${cur === v ? 'checked' : ''}><span>${v}</span></label>`;
-    }
-    inputs = `
-      <div class="field"><span>${esc(t.name)}</span>
-        <div class="scale" style="--n:${t.scaleMax - t.scaleMin + 1}">${btns}</div>
-        <div class="scale-labels"><small>${esc(t.lowLabel || '')}</small><small>${esc(t.highLabel || '')}</small></div>
-      </div>`;
-  } else if (t.type === 'check') {
-    const cur = e ? vals.v : 1;
-    inputs = `
-      <div class="field"><span>${esc(t.name)}</span>
-        <div class="seg big">
-          <label><input type="radio" name="f_v" value="1" ${cur === 1 ? 'checked' : ''}><span>Yes</span></label>
-          <label><input type="radio" name="f_v" value="0" ${cur === 0 ? 'checked' : ''}><span>No</span></label>
-        </div>
-      </div>`;
-  } else {
-    inputs = `
-      <label class="field"><span>Amount${t.unit ? ` <small>(${esc(t.unit)})</small>` : ''}</span>
-        <div class="stepper">
-          <button type="button" data-act="step" data-d="${-stepOf(t)}" aria-label="Less">−</button>
-          <input name="f_v" type="text" inputmode="decimal" value="${num(vals.v) ? vals.v : stepOf(t)}">
-          <button type="button" data-act="step" data-d="${stepOf(t)}" aria-label="More">+</button>
-        </div>
-      </label>`;
-  }
-
-  const when = e ? new Date(e.ts) : new Date();
   const body = `
     <div class="sheet-tracker" style="--c:${t.color}"><span class="ticon">${esc(t.icon || '•')}</span>${esc(t.name)}</div>
-    ${inputs}
-    <label class="field"><span>When</span><input name="ts" type="datetime-local" value="${toLocalInput(when)}" required></label>
+    <div class="field" style="--c:${t.color}">${valueInputs(t, e?.values || {}, 'f_', { autofocus: true, hintLast: !e })}</div>
+    ${whenInputs(e ? new Date(e.ts) : new Date())}
     <label class="field"><span>Note <small>(optional)</small></span><textarea name="note" rows="2" placeholder="e.g. after exercise">${esc(e?.note || '')}</textarea></label>
     <p class="form-error" hidden></p>`;
 
   openSheet(e ? 'Edit entry' : 'Log', body, {
     footer: e ? `<button type="button" class="btn danger block" data-act="delete-entry" data-id="${e.id}">Delete entry</button>` : '',
     onSubmit(fd, form) {
-      const values = {};
-      for (const f of store.fieldsOf(t)) {
-        const v = parseNum(fd.get('f_' + f.id));
-        if (v != null) values[f.id] = v;
-      }
+      const values = readValues(t, fd, 'f_');
       if (!Object.keys(values).length) return formError(form, t.type === 'scale' ? 'Pick a value.' : 'Enter a value.');
-      const ts = new Date(fd.get('ts'));
-      if (isNaN(ts)) return formError(form, 'Enter a valid date and time.');
+      if (!e && t.type === 'scale' && t.defaultZero && values.v === 0) {
+        return formError(form, `0 is already the default. Pick ${t.scaleMin}–${t.scaleMax} to record a score.`);
+      }
+      const ts = readWhen(fd);
+      if (!ts) return formError(form, 'Enter a valid date and time.');
       store.saveEntry({ id: e?.id || store.uid(), trackerId: t.id, ts: ts.toISOString(), values, note: String(fd.get('note') || '').trim() });
       toast(e ? 'Entry updated' : `${t.name} logged`);
     },
@@ -583,7 +846,11 @@ function renderTrackerEditor() {
         <label class="field"><span>To</span><select name="scaleMax">${[3, 4, 5, 6, 7, 8, 9, 10].map((n) => `<option ${d.scaleMax === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         <label class="field"><span>Low label</span><input name="lowLabel" value="${esc(d.lowLabel)}" placeholder="e.g. None"></label>
         <label class="field"><span>High label</span><input name="highLabel" value="${esc(d.highLabel)}" placeholder="e.g. Worst"></label>
-      </div>`;
+      </div>
+      <label class="check-line">
+        <input type="checkbox" name="defaultZero" ${d.defaultZero ? 'checked' : ''}>
+        <span><b>No entry = 0</b><small class="block">Logging starts at 0 and the dashboard shows 0 on days without a score (e.g. no headache).</small></span>
+      </label>`;
   } else if (d.type === 'count') {
     typeBody = `
       <div class="grid2">
@@ -634,7 +901,10 @@ function readDraft(form) {
   d.icon = String(fd.get('icon') ?? d.icon).trim() || '📊';
   d.color = fd.get('color') || d.color;
   d.type = fd.get('type') || d.type;
-  if (fd.has('scaleMin')) d.scaleMin = +fd.get('scaleMin');
+  if (fd.has('scaleMin')) {
+    d.scaleMin = +fd.get('scaleMin');
+    d.defaultZero = fd.has('defaultZero');
+  }
   if (fd.has('scaleMax')) d.scaleMax = +fd.get('scaleMax');
   if (fd.has('lowLabel')) d.lowLabel = String(fd.get('lowLabel'));
   if (fd.has('highLabel')) d.highLabel = String(fd.get('highLabel'));
@@ -657,7 +927,7 @@ function readDraft(form) {
 const TEMPLATES = [
   { mine: true, name: 'Blood pressure', icon: '🩺', color: '#dc2626', type: 'number', fields: [['Systolic', 'mmHg', 0, 90, 120], ['Diastolic', 'mmHg', 0, 60, 80], ['Pulse', 'bpm', 0, null, null]] },
   { mine: true, name: 'Liquid intake', icon: '🥤', color: '#0891b2', type: 'count', unit: 'ml', step: 250, dailyGoal: null },
-  { mine: true, name: 'Headache', icon: '🤕', color: '#7c3aed', type: 'scale', scaleMin: 1, scaleMax: 10, lowLabel: 'Mild', highLabel: 'Severe' },
+  { mine: true, name: 'Headache', icon: '🤕', color: '#7c3aed', type: 'scale', scaleMin: 1, scaleMax: 10, lowLabel: 'Mild', highLabel: 'Severe', defaultZero: true },
   { name: 'Weight', icon: '⚖️', color: '#2563eb', type: 'number', fields: [['Weight', 'kg', 1, null, null]] },
   { name: 'Blood glucose', icon: '🩸', color: '#d97706', type: 'number', fields: [['Glucose', 'mmol/L', 1, 4, 7.8]] },
   { name: 'Sleep', icon: '😴', color: '#7c3aed', type: 'number', fields: [['Sleep', 'h', 1, 7, 9]] },
@@ -672,7 +942,7 @@ function fromTemplate(tp) {
   if (tp.type === 'number') {
     t.fields = tp.fields.map(([name, unit, decimals, targetMin, targetMax]) => ({ ...newField(name, unit), decimals, targetMin, targetMax }));
   }
-  if (tp.type === 'scale') Object.assign(t, { scaleMin: tp.scaleMin, scaleMax: tp.scaleMax, lowLabel: tp.lowLabel, highLabel: tp.highLabel });
+  if (tp.type === 'scale') Object.assign(t, { scaleMin: tp.scaleMin, scaleMax: tp.scaleMax, lowLabel: tp.lowLabel, highLabel: tp.highLabel, defaultZero: !!tp.defaultZero });
   if (tp.type === 'count') Object.assign(t, { unit: tp.unit, step: tp.step || 1, dailyGoal: tp.dailyGoal });
   return t;
 }
@@ -829,14 +1099,38 @@ document.addEventListener('click', (ev) => {
     }
     case 'move':
       return store.moveTracker(id, Number(el.dataset.dir));
-    case 'stats-tracker':
-      ui.statsTracker = id;
+    case 'new-entry':
+      return openNewEntry(el.dataset.day);
+    case 'go-dashboard':
+      ui.tab = 'dashboard';
+      ui.dashMode = 'day';
+      ui.dashDay = S.dayKey(new Date());
       saveUi();
-      return renderStats();
-    case 'stats-range':
-      ui.statsRange = el.dataset.range === 'all' ? 'all' : Number(el.dataset.range);
+      render();
+      return window.scrollTo(0, 0);
+    case 'dash-mode':
+      ui.dashMode = el.dataset.mode;
       saveUi();
-      return renderStats();
+      return renderDashboard();
+    case 'dash-range':
+      ui.dashRange = Number(el.dataset.range);
+      ui.tableAll = false;
+      saveUi();
+      return renderDashboard();
+    case 'day-shift': {
+      const next = S.dayKey(S.addDays(new Date(ui.dashDay + 'T12:00:00'), Number(el.dataset.d)));
+      if (next <= S.dayKey(new Date())) ui.dashDay = next;
+      return renderDashboard();
+    }
+    case 'goto-day':
+      ui.dashMode = 'day';
+      ui.dashDay = el.dataset.day;
+      saveUi();
+      renderDashboard();
+      return window.scrollTo(0, 0);
+    case 'table-all':
+      ui.tableAll = true;
+      return renderDashboard();
     case 'more-history':
       ui.historyLimit += 300;
       return renderHistory();
@@ -860,6 +1154,9 @@ document.addEventListener('change', (ev) => {
     ui.historyLimit = 150;
     saveUi();
     renderHistory();
+  } else if (el.dataset.act === 'day-pick') {
+    if (el.value) ui.dashDay = el.value > S.dayKey(new Date()) ? S.dayKey(new Date()) : el.value;
+    renderDashboard();
   } else if (el.dataset.act === 'import') {
     importFile(el);
   } else if (el.name === 'type' && draft && sheet.contains(el)) {
@@ -877,7 +1174,24 @@ $$('.tabbar button').forEach((b) =>
   })
 );
 
+// One-time upgrade: Headache trackers created before "no entry = 0" existed get it switched on.
+for (const t of store.trackers()) {
+  if (t.type === 'scale' && t.name === 'Headache' && t.defaultZero === undefined) store.saveTracker({ ...t, defaultZero: true });
+}
+
 store.onChange(render);
+
+// Tapping the day title in the dashboard opens the date picker.
+document.addEventListener('click', (ev) => {
+  const input = ev.target.closest('.daypick')?.querySelector('input');
+  if (input && input.showPicker) {
+    try {
+      input.showPicker();
+    } catch {
+      /* not allowed here; the native input still works */
+    }
+  }
+});
 
 // Re-render when returning to the app (e.g. "today" rolled over to a new day).
 document.addEventListener('visibilitychange', () => {

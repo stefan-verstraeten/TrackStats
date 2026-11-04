@@ -64,10 +64,10 @@ export function emptyChart(msg = 'No data in this period') {
  * series: [{ name, color, points: [{t: Date, v}] }]
  * bands:  [{ min, max, color }]  shaded target ranges
  */
-export function lineChart({ series, xStart, xEnd, bands = [], label = 'Line chart' }) {
+export function lineChart({ series, xStart, xEnd, bands = [], yRange = [], label = 'Line chart' }) {
   const vals = series.flatMap((s) => s.points.map((p) => p.v));
   if (!vals.length) return emptyChart();
-  const bandVals = bands.flatMap((b) => [b.min, b.max]).filter(Number.isFinite);
+  const bandVals = [...bands.flatMap((b) => [b.min, b.max]), ...yRange].filter(Number.isFinite);
   const scale = niceScale(Math.min(...vals, ...bandVals), Math.max(...vals, ...bandVals));
   const t0 = xStart.getTime();
   const span = Math.max(1, xEnd.getTime() - t0);

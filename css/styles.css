@@ -235,7 +235,9 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
 .sheet-foot { padding: 4px 16px calc(env(safe-area-inset-bottom) + 18px); }
 .sheet-tracker { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 1.1rem; }
 
-.field { display: grid; gap: 6px; }
+.field { display: grid; gap: 6px; min-width: 0; }
+.field input, .field select, .field textarea { min-width: 0; max-width: 100%; }
+.sheet-body > *, .entry-sec > * { min-width: 0; }
 .field > span { font-size: 0.85rem; font-weight: 600; color: var(--muted); }
 .field input:not([type='radio']):not([type='checkbox']), .field textarea {
   width: 100%; min-height: 46px; padding: 10px 12px; border-radius: 12px;
@@ -244,14 +246,14 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
 .field input:focus, .field textarea:focus, .field select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .field input[type='datetime-local'] { -webkit-appearance: none; appearance: none; text-align: left; }
 .field textarea { resize: vertical; min-height: 60px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .grid-icon { display: grid; grid-template-columns: 70px 1fr; gap: 10px; }
 .icon-input { text-align: center; font-size: 1.4rem !important; }
 .sub { margin: 4px 0 -4px; font-size: 0.9rem; }
 .field-row { display: grid; gap: 8px; padding: 12px; background: var(--surface); border-radius: var(--radius); }
 
-.scale { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 5px; }
+.scale { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 5px; }
 .scale-opt input { position: absolute; opacity: 0; pointer-events: none; }
 .scale-opt span {
   display: grid; place-items: center; height: 46px; border-radius: 10px;
@@ -260,7 +262,7 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
 .scale-opt input:checked + span { background: var(--c, var(--accent)); border-color: transparent; color: #fff; }
 .scale-labels { display: flex; justify-content: space-between; }
 
-.stepper { display: grid; grid-template-columns: 52px 1fr 52px; gap: 8px; }
+.stepper { display: grid; grid-template-columns: 52px minmax(0, 1fr) 52px; gap: 8px; }
 .stepper button { border: 0; border-radius: 12px; background: var(--surface-2); font-size: 1.4rem; }
 .stepper input { text-align: center; font-size: 1.2rem !important; font-weight: 650; }
 
@@ -279,3 +281,63 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
   font-size: 0.9rem; font-weight: 600; transition: 0.2s; white-space: nowrap;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---- home actions ---- */
+.home-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.action {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  min-height: 108px; padding: 14px; border: 0; border-radius: var(--radius);
+  background: var(--surface); box-shadow: var(--shadow); text-align: left;
+}
+.action svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.action b { display: block; font-size: 1.08rem; }
+.action small { display: block; margin-top: 2px; line-height: 1.3; }
+.action.primary { background: var(--accent); color: var(--accent-text); }
+.action.primary small { color: inherit; opacity: 0.85; }
+.action:active { transform: scale(0.98); }
+
+.block { display: block; }
+.center { text-align: center; }
+
+/* ---- combined entry form ---- */
+.entry-sec { display: grid; gap: 10px; padding: 12px; background: var(--surface); border-radius: var(--radius); border-left: 4px solid var(--c); }
+.entry-sec h3 { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 1rem; }
+.entry-sec .grid3 .field > span { font-size: 0.78rem; }
+.scale { gap: 4px; }
+.check-line { display: flex; gap: 12px; align-items: flex-start; padding: 12px; background: var(--surface); border-radius: var(--radius); }
+.check-line input { width: 22px; height: 22px; margin: 0; accent-color: var(--accent); flex: none; }
+.field input[type='date'], .field input[type='time'] { -webkit-appearance: none; appearance: none; text-align: left; }
+
+/* ---- dashboard ---- */
+.card-title { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-size: 1rem; }
+.card-title small { font-weight: 400; }
+.pcard { padding: 12px 12px 14px; margin-bottom: 12px; }
+.pcard .chart { margin-bottom: 6px; }
+.field-stats h4 { display: flex; align-items: center; gap: 8px; margin: 12px 0 8px; font-size: 0.92rem; }
+.field-stats .dot { width: 10px; height: 10px; border-radius: 50%; }
+.tile.warn .tv { color: var(--danger); }
+.period-note { margin: -4px 4px 12px; }
+
+.daynav { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; gap: 8px; margin-bottom: 12px; }
+.daynav .icon-btn { width: 44px; height: 44px; font-size: 1.5rem; }
+.daypick { position: relative; display: block; text-align: center; padding: 7px 8px; background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); cursor: pointer; }
+.daypick b, .daypick small { display: block; }
+.daypick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.daytable { width: 100%; border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+.daytable th, .daytable td { padding: 9px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.daytable th:first-child, .daytable td:first-child { text-align: left; }
+.daytable th { font-size: 1.05rem; font-weight: 600; vertical-align: bottom; }
+.daytable th small { display: block; font-size: 0.65rem; }
+.daytable tbody tr { cursor: pointer; }
+.daytable tbody tr:last-child td { border-bottom: 0; }
+.daytable tbody tr:active { background: var(--surface-2); }
+.daytable td.warn { color: var(--danger); font-weight: 600; }
+.daytable td.strong { font-weight: 700; }
+.daytable td.dim { color: var(--muted); }
+.sheet-body, .entry-sec { grid-template-columns: minmax(0, 1fr); }
+.field-stats .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.field-stats .tile { padding: 8px 9px; }
+.field-stats .tv { font-size: 1.12rem; }
+.field-stats .tl { font-size: 0.66rem; }
