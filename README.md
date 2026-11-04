@@ -9,8 +9,11 @@ You define your own trackers; the app stores everything **only on your device** 
 |---|---|---|---|
 | **Measurement** | Blood pressure, weight, glucose, sleep hours… One or more values, each with a unit, decimals and an optional target range | Form with one input per value | Line chart with target bands; average ± SD, latest, change, min, max, % in target |
 | **Scale** | Mood, pain, energy (0/1 to 3–10) | Tap a number | Line chart; average, latest, min, max |
-| **Counter** | Glasses of water, cigarettes, episodes | One-tap **+1** or an amount | Daily bars with goal line; per-day average, total, best day, goal days |
+| **Counter** | Liquid intake (ml), episodes | One-tap **+amount** (e.g. +250 ml, set per tracker) or any amount | Daily bars with goal line; per-day average, total, best day, goal days |
 | **Yes / No** | Medication taken, exercise done | One-tap **✓** | Calendar grid; % of days, current and best streak |
+
+On first launch, **Add my 3 trackers** sets up the default set: blood pressure (systolic/diastolic/pulse),
+liquid intake (ml, +250 per tap) and a 1–10 headache score. Everything is editable afterwards.
 
 Every entry has a date/time (editable, so you can log after the fact) and an optional note.
 Periods: 7 days, 30 days, 90 days, 1 year, all.

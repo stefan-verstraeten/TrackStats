@@ -1,6 +1,6 @@
 // TrackStats service worker: makes the app work offline.
 // Bump CACHE whenever you ship changes so phones pick up the new files.
-const CACHE = 'trackstats-v1';
+const CACHE = 'trackstats-v2';
 const ASSETS = [
   './',
   'index.html',

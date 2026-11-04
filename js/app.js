@@ -40,6 +40,9 @@ function relTime(d) {
 export const COLORS = ['#0d9488', '#2563eb', '#db2777', '#d97706', '#7c3aed', '#059669', '#dc2626', '#0891b2'];
 const TYPE_LABEL = { number: 'Measurement', scale: 'Scale', count: 'Counter', check: 'Yes / No' };
 
+/** Amount a counter adds per tap (e.g. 250 ml). */
+const stepOf = (t) => (num(t.step) && t.step > 0 ? t.step : 1);
+
 /** Color for field i of a tracker: first field uses the tracker color. */
 function seriesColor(t, i) {
   if (i === 0) return t.color;
@@ -144,9 +147,10 @@ function emptyState() {
     <div class="empty">
       <div class="empty-icon">📈</div>
       <h2>Track what matters to you</h2>
-      <p>Create your own trackers: measurements with units, 1–10 scales, counters or daily yes/no checks.</p>
-      <button class="btn primary" data-act="new-tracker">Create a tracker</button>
-      <button class="btn" data-act="templates">Start from examples</button>
+      <p>Start with blood pressure, liquid intake and a 1–10 headache score — or build your own trackers.</p>
+      <button class="btn primary" data-act="setup-mine">Add my 3 trackers</button>
+      <button class="btn" data-act="templates">Choose from examples</button>
+      <button class="btn" data-act="new-tracker">Create a tracker</button>
     </div>`;
 }
 
@@ -164,7 +168,10 @@ function renderToday() {
         .map((t) => {
           const s = todaySummary(t);
           let quick = '';
-          if (t.type === 'count') quick = `<button class="quick" data-act="quick-count" data-id="${t.id}" aria-label="Add 1 to ${esc(t.name)}">+1</button>`;
+          if (t.type === 'count') {
+            const step = stepOf(t);
+            quick = `<button class="quick${String(step).length > 2 ? ' wide' : ''}" data-act="quick-count" data-id="${t.id}" aria-label="Add ${step} ${esc(t.unit || '')} to ${esc(t.name)}">+${fmt(step)}</button>`;
+          }
           else if (t.type === 'check') {
             quick = s.done
               ? `<button class="quick on" data-act="undo-check" data-id="${t.id}" aria-label="Undo ${esc(t.name)} today">✓</button>`
@@ -482,9 +489,9 @@ function openLog(trackerId, entryId) {
     inputs = `
       <label class="field"><span>Amount${t.unit ? ` <small>(${esc(t.unit)})</small>` : ''}</span>
         <div class="stepper">
-          <button type="button" data-act="step" data-d="-1" aria-label="Less">−</button>
-          <input name="f_v" type="text" inputmode="decimal" value="${num(vals.v) ? vals.v : 1}">
-          <button type="button" data-act="step" data-d="1" aria-label="More">+</button>
+          <button type="button" data-act="step" data-d="${-stepOf(t)}" aria-label="Less">−</button>
+          <input name="f_v" type="text" inputmode="decimal" value="${num(vals.v) ? vals.v : stepOf(t)}">
+          <button type="button" data-act="step" data-d="${stepOf(t)}" aria-label="More">+</button>
         </div>
       </label>`;
   }
@@ -580,10 +587,11 @@ function renderTrackerEditor() {
   } else if (d.type === 'count') {
     typeBody = `
       <div class="grid2">
-        <label class="field"><span>Unit</span><input name="unit" value="${esc(d.unit)}" placeholder="e.g. glasses"></label>
+        <label class="field"><span>Unit</span><input name="unit" value="${esc(d.unit)}" placeholder="e.g. ml"></label>
+        <label class="field"><span>Amount per tap</span><input name="step" inputmode="decimal" value="${num(d.step) ? d.step : 1}" placeholder="1"></label>
         <label class="field"><span>Daily goal <small>(optional)</small></span><input name="dailyGoal" inputmode="decimal" value="${num(d.dailyGoal) ? d.dailyGoal : ''}" placeholder="–"></label>
       </div>
-      <p class="hint left">Counters add up per day. Tap +1 on the Log screen each time.</p>`;
+      <p class="hint left">Counters add up per day. The quick button on the Log screen adds the amount per tap (e.g. +250 ml for a glass); tap the tracker to log a different amount.</p>`;
   } else {
     typeBody = `<p class="hint left">One tap per day on the Log screen. Stats show completion rate and streaks.</p>`;
   }
@@ -632,6 +640,7 @@ function readDraft(form) {
   if (fd.has('highLabel')) d.highLabel = String(fd.get('highLabel'));
   if (fd.has('unit')) d.unit = String(fd.get('unit')).trim();
   if (fd.has('dailyGoal')) d.dailyGoal = parseNum(fd.get('dailyGoal'));
+  if (fd.has('step')) d.step = parseNum(fd.get('step')) > 0 ? parseNum(fd.get('step')) : 1;
   for (const f of d.fields || []) {
     if (!fd.has('fn_' + f.id)) continue;
     f.name = String(fd.get('fn_' + f.id));
@@ -644,14 +653,17 @@ function readDraft(form) {
 
 // ---- templates ----
 
+// `mine: true` = the default setup offered on first launch.
 const TEMPLATES = [
-  { name: 'Blood pressure', icon: '🩺', color: '#dc2626', type: 'number', fields: [['Systolic', 'mmHg', 0, 90, 120], ['Diastolic', 'mmHg', 0, 60, 80], ['Pulse', 'bpm', 0, null, null]] },
+  { mine: true, name: 'Blood pressure', icon: '🩺', color: '#dc2626', type: 'number', fields: [['Systolic', 'mmHg', 0, 90, 120], ['Diastolic', 'mmHg', 0, 60, 80], ['Pulse', 'bpm', 0, null, null]] },
+  { mine: true, name: 'Liquid intake', icon: '🥤', color: '#0891b2', type: 'count', unit: 'ml', step: 250, dailyGoal: null },
+  { mine: true, name: 'Headache', icon: '🤕', color: '#7c3aed', type: 'scale', scaleMin: 1, scaleMax: 10, lowLabel: 'Mild', highLabel: 'Severe' },
   { name: 'Weight', icon: '⚖️', color: '#2563eb', type: 'number', fields: [['Weight', 'kg', 1, null, null]] },
   { name: 'Blood glucose', icon: '🩸', color: '#d97706', type: 'number', fields: [['Glucose', 'mmol/L', 1, 4, 7.8]] },
   { name: 'Sleep', icon: '😴', color: '#7c3aed', type: 'number', fields: [['Sleep', 'h', 1, 7, 9]] },
   { name: 'Mood', icon: '🙂', color: '#0d9488', type: 'scale', scaleMin: 1, scaleMax: 5, lowLabel: 'Very low', highLabel: 'Great' },
-  { name: 'Pain', icon: '🤕', color: '#db2777', type: 'scale', scaleMin: 0, scaleMax: 10, lowLabel: 'None', highLabel: 'Worst' },
-  { name: 'Water', icon: '💧', color: '#0891b2', type: 'count', unit: 'glasses', dailyGoal: 8 },
+  { name: 'Pain', icon: '🩹', color: '#db2777', type: 'scale', scaleMin: 0, scaleMax: 10, lowLabel: 'None', highLabel: 'Worst' },
+  { name: 'Water', icon: '💧', color: '#2563eb', type: 'count', unit: 'glasses', step: 1, dailyGoal: 8 },
   { name: 'Medication taken', icon: '💊', color: '#059669', type: 'check' },
 ];
 
@@ -661,7 +673,7 @@ function fromTemplate(tp) {
     t.fields = tp.fields.map(([name, unit, decimals, targetMin, targetMax]) => ({ ...newField(name, unit), decimals, targetMin, targetMax }));
   }
   if (tp.type === 'scale') Object.assign(t, { scaleMin: tp.scaleMin, scaleMax: tp.scaleMax, lowLabel: tp.lowLabel, highLabel: tp.highLabel });
-  if (tp.type === 'count') Object.assign(t, { unit: tp.unit, dailyGoal: tp.dailyGoal });
+  if (tp.type === 'count') Object.assign(t, { unit: tp.unit, step: tp.step || 1, dailyGoal: tp.dailyGoal });
   return t;
 }
 
@@ -673,7 +685,7 @@ function openTemplates() {
       ${TEMPLATES.map(
         (tp, i) => `
         <label class="row check-row" style="--c:${tp.color}">
-          <input type="checkbox" name="tpl" value="${i}" ${have.has(tp.name) ? 'disabled' : ''}>
+          <input type="checkbox" name="tpl" value="${i}" ${have.has(tp.name) ? 'disabled' : tp.mine && !have.size ? 'checked' : ''}>
           <span class="ticon sm">${tp.icon}</span>
           <span class="rbody"><span class="rname">${esc(tp.name)}</span><span class="rnote">${TYPE_LABEL[tp.type]}${have.has(tp.name) ? ' · already added' : ''}</span></span>
         </label>`
@@ -757,8 +769,9 @@ document.addEventListener('click', (ev) => {
       return openLog(null, id);
     case 'quick-count': {
       const t = store.tracker(id);
-      store.saveEntry({ id: store.uid(), trackerId: id, ts: new Date().toISOString(), values: { v: 1 }, note: '' });
-      return toast(`+1 ${t.unit || t.name}`);
+      const step = stepOf(t);
+      store.saveEntry({ id: store.uid(), trackerId: id, ts: new Date().toISOString(), values: { v: step }, note: '' });
+      return toast(`+${fmt(step)} ${t.unit || t.name}`);
     }
     case 'quick-check':
       store.saveEntry({ id: store.uid(), trackerId: id, ts: new Date().toISOString(), values: { v: 1 }, note: '' });
@@ -788,6 +801,12 @@ document.addEventListener('click', (ev) => {
       return openTrackerEditor(id);
     case 'templates':
       return openTemplates();
+    case 'setup-mine': {
+      const have = new Set(store.trackers().map((t) => t.name));
+      const add = TEMPLATES.filter((tp) => tp.mine && !have.has(tp.name));
+      add.forEach((tp) => store.saveTracker(fromTemplate(tp)));
+      return toast(`${add.length} trackers added`);
+    }
     case 'add-field':
       readDraft(el.form);
       draft.fields.push(newField());

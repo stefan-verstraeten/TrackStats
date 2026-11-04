@@ -109,6 +109,7 @@ main {
 }
 .quick:active { transform: scale(0.94); }
 .quick.on { background: var(--c); color: #fff; }
+.quick.wide { width: auto; min-width: 46px; padding: 0 12px; border-radius: 23px; font-size: 1rem; }
 
 .list { overflow: hidden; }
 .row {
