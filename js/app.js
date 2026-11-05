@@ -105,17 +105,19 @@ function formatEntry(t, e, units = true) {
       return units ? `${fmt(v.v)} / ${t.scaleMax}` : fmt(v.v);
     default: {
       if (isSided(t)) {
-        // "L 128/82 · 66 | R 131/85 · 68"
+        // "[L] 128/82 · 66  [R] 131/85 · 68" with coloured arm badges
         const parts = t.sides.map((s) => {
           const txt = valuesText(sideFields(t, s.id), v, false);
-          return txt ? `${s.short} ${txt}` : '';
+          return txt ? `${armBadge(s)}${txt}` : '';
         });
-        return parts.filter(Boolean).join(' | ') || '–';
+        return parts.filter(Boolean).join(' ') || '–';
       }
       return valuesText(store.fieldsOf(t), v, units) || '–';
     }
   }
 }
+
+const armBadge = (s) => `<b class="arm arm-${s.id}" title="${esc(s.name)}">${esc(s.short)}</b>`;
 
 /** "128/82 mmHg · 66 bpm": consecutive values with the same unit are joined with "/". */
 function valuesText(fields, v, units = true) {
@@ -191,6 +193,7 @@ function renderToday() {
     return;
   }
   view.innerHTML = `
+    ${duplicateBanner()}
     <div class="home-actions">
       <button class="action primary" data-act="new-entry">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -233,6 +236,19 @@ function renderToday() {
         .join('')}
     </div>
     <p class="hint">Tap a tracker to log just that one; the round button is a quick add.</p>`;
+}
+
+/** Shown when two trackers share a name (e.g. examples added and then a backup restored). */
+function duplicateBanner() {
+  const groups = store.duplicateGroups();
+  if (!groups.length) return '';
+  return `
+    <div class="banner">
+      <b>Duplicate trackers</b>
+      <span>${groups.map((g) => `${esc(g[0].icon || '')} ${esc(g[0].name)} ×${g.length}`).join(' · ')}</span>
+      <small>Probably the examples were added and a backup restored. Merging keeps every entry.</small>
+      <button class="btn primary" data-act="merge-dups">Merge duplicates</button>
+    </div>`;
 }
 
 function renderHistory() {
@@ -437,7 +453,7 @@ function sidedTable(t, a, { withRange = false } = {}) {
       ? `<td class="${outOfTarget(p, st.mean) ? 'warn' : ''}">${fmt(st.mean, p.decimals)}${withRange && st.min !== st.max ? `<small>${fmt(st.min, p.decimals)}–${fmt(st.max, p.decimals)}</small>` : ''}</td>`
       : '<td class="dim">–</td>';
   const sideRows = t.sides
-    .map((s) => `<tr><th>${esc(s.name)}</th>${ps.map((p) => cell(stats.get(s.id === 'L' ? p.L?.id : p.R.id), p)).join('')}</tr>`)
+    .map((s) => `<tr><th>${armBadge(s)}${esc(s.name)}</th>${ps.map((p) => cell(stats.get(s.id === 'L' ? p.L?.id : p.R.id), p)).join('')}</tr>`)
     .join('');
   const deltaRow = `<tr class="delta"><th>Difference<small>right − left</small></th>${ps
     .map((p) => {
@@ -862,6 +878,7 @@ function renderTrackers() {
   const list = store.trackers();
   const c = store.counts();
   view.innerHTML = `
+    ${duplicateBanner()}
     ${
       list.length
         ? `<div class="card list">
@@ -954,8 +971,8 @@ function valueInputs(t, vals, prefix, { fresh = false, autofocus = false, hintLa
         const fields = sideFields(t, s.id);
         const cols = fields.length >= 3 ? 'grid3' : fields.length === 2 ? 'grid2' : '';
         return `
-        <div class="side-block">
-          <div class="side-label">${esc(s.name)}</div>
+        <div class="side-block side-${s.id}">
+          <div class="side-label">${armBadge(s)}${esc(s.name)}</div>
           <div class="${cols}">${fields
             .map(
               (f, i) => `
@@ -1530,6 +1547,14 @@ document.addEventListener('click', (ev) => {
       return store.moveTracker(id, Number(el.dataset.dir));
     case 'new-entry':
       return openNewEntry(el.dataset.day);
+    case 'merge-dups': {
+      const groups = store.duplicateGroups();
+      const lines = groups.map((g) => `• ${g[0].name}: ${g.length} trackers`).join('\n');
+      if (!confirm(`Merge into one tracker each?\n\n${lines}\n\nAll entries are kept and moved to the tracker with the most entries. Exact duplicate entries are removed.`)) return;
+      const n = store.mergeDuplicates();
+      migrate();
+      return toast(`Merged ${n} duplicate tracker${n === 1 ? '' : 's'}`);
+    }
     case 'go-dashboard':
       ui.tab = 'dashboard';
       ui.dashMode = 'day';

@@ -139,16 +139,109 @@ export function exportData() {
   };
 }
 
-/** Merge an export into the current data. Items with the same id are overwritten. */
+// ---- matching trackers by name (restore + duplicate merge) ----
+
+const norm = (s) => String(s || '').trim().toLowerCase();
+const sameTracker = (a, b) => a.type === b.type && norm(a.name) === norm(b.name);
+
+/**
+ * Map a source tracker's field ids onto a target tracker's fields, by value name and arm.
+ * Values without an arm belong to the right arm (that is how data from before left/right is treated).
+ */
+function fieldMap(target, source) {
+  const map = {};
+  if (target.type !== 'number') return map; // single value 'v'
+  const sided = Array.isArray(target.sides);
+  for (const f of source.fields || []) {
+    const side = sided ? f.side || 'R' : undefined;
+    const hit = (target.fields || []).find((k) => norm(k.name) === norm(f.name) && (!sided || k.side === side));
+    map[f.id] = hit ? hit.id : f.id;
+  }
+  return map;
+}
+
+function moveEntry(e, targetId, map) {
+  const values = {};
+  for (const [k, v] of Object.entries(e.values || {})) values[map[k] ?? k] = v;
+  return { ...e, trackerId: targetId, values };
+}
+
+/** Drop exact duplicates (same tracker, time, values and type), e.g. after restoring the same data twice. */
+function dedupeEntries(list) {
+  const seen = new Set();
+  return list.filter((e) => {
+    const key = [e.trackerId, e.ts, JSON.stringify(Object.entries(e.values || {}).sort()), e.kind || ''].join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Groups of trackers with the same name and type: [[a, b], ...]. */
+export function duplicateGroups() {
+  const groups = new Map();
+  for (const t of trackers()) {
+    const k = t.type + '|' + norm(t.name);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  }
+  return [...groups.values()].filter((g) => g.length > 1);
+}
+
+/**
+ * Merge trackers with the same name and type into one. The one with the most entries is kept;
+ * the others' entries move to it (values matched by name and arm). Nothing is deleted except exact duplicates.
+ */
+export function mergeDuplicates() {
+  let merged = 0;
+  const count = (id) => state.entries.filter((e) => e.trackerId === id).length;
+  for (const group of duplicateGroups()) {
+    group.sort((a, b) => count(b.id) - count(a.id) || (a.order ?? 0) - (b.order ?? 0));
+    const [keep, ...dups] = group;
+    for (const d of dups) {
+      const map = fieldMap(keep, d);
+      if (keep.type === 'number') {
+        for (const f of d.fields || []) if (!keep.fields.some((k) => k.id === map[f.id])) keep.fields.push({ ...f });
+      }
+      state.entries = state.entries.map((e) => (e.trackerId === d.id ? moveEntry(e, keep.id, map) : e));
+      state.trackers = state.trackers.filter((t) => t.id !== d.id);
+      merged++;
+    }
+  }
+  state.entries = dedupeEntries(state.entries);
+  persist();
+  return merged;
+}
+
+/**
+ * Merge a backup into the current data. Items with the same id are overwritten.
+ * A backup tracker that has a different id but the same name and type as an existing tracker
+ * is folded into the existing one, so restoring never creates duplicates.
+ */
 export function importData(data) {
   if (!valid(data)) throw new Error('This file is not a TrackStats backup.');
   const byId = (list) => new Map(list.map((x) => [x.id, x]));
   const t = byId(state.trackers);
-  data.trackers.forEach((x) => x.id && t.set(x.id, x));
+  const redirect = new Map(); // backup tracker id -> { id, map }
+  for (const x of data.trackers) {
+    if (!x.id) continue;
+    if (!t.has(x.id)) {
+      const same = [...t.values()].find((k) => sameTracker(k, x));
+      if (same) {
+        redirect.set(x.id, { id: same.id, map: fieldMap(same, x) });
+        continue;
+      }
+    }
+    t.set(x.id, x);
+  }
   const e = byId(state.entries);
-  data.entries.forEach((x) => x.id && x.trackerId && x.ts && e.set(x.id, x));
+  for (const x of data.entries) {
+    if (!x.id || !x.trackerId || !x.ts) continue;
+    const r = redirect.get(x.trackerId);
+    e.set(x.id, r ? moveEntry(x, r.id, r.map) : x);
+  }
   state.trackers = [...t.values()];
-  state.entries = [...e.values()];
+  state.entries = dedupeEntries([...e.values()]);
   persist();
   return { trackers: data.trackers.length, entries: data.entries.length };
 }
