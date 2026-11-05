@@ -362,3 +362,43 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
 .kval { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
 .kval small { font-weight: 400; }
 .sub-h { margin: 14px 0 0; font-size: 0.92rem; }
+
+/* ---- left / right arm ---- */
+.side-block { display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr); }
+.side-block + .side-block { padding-top: 10px; border-top: 1px dashed var(--line); }
+.side-label { font-weight: 700; font-size: 0.9rem; }
+.sidetable { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.95rem; margin-top: 4px; }
+.sidetable th, .sidetable td { padding: 7px 6px; text-align: right; border-bottom: 1px solid var(--line); vertical-align: top; }
+.sidetable th:first-child { text-align: left; font-weight: 600; }
+.sidetable thead th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.sidetable td { font-weight: 700; font-size: 1.05rem; }
+.sidetable small { display: block; font-size: 0.7rem; font-weight: 400; color: var(--muted); }
+.sidetable tr.delta th, .sidetable tr.delta td { border-bottom: 0; background: var(--surface-2); }
+.sidetable tr.delta th { border-radius: 8px 0 0 8px; }
+.sidetable tr.delta td:last-child { border-radius: 0 8px 8px 0; }
+.sidetable td.warn { color: var(--danger); }
+.sidetable td.dim { color: var(--muted); font-weight: 400; }
+
+/* history rows: let long values (e.g. both arms) wrap under the name */
+.rtop { flex-wrap: wrap; column-gap: 8px; }
+.rval { margin-left: auto; }
+
+/* ---- overview ---- */
+.chart .unit { font-size: 9px; font-weight: 600; }
+.chart .strip-num { font-size: 9px; font-weight: 700; }
+.ov-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 6px; }
+.lg { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 10px; font-size: 0.8rem; }
+.lg i { width: 14px; height: 3px; border-radius: 2px; background: var(--lc); }
+.lg i.dash { background: repeating-linear-gradient(90deg, var(--lc) 0 4px, transparent 4px 7px); }
+.lg i.bar { width: 10px; height: 10px; border-radius: 2px; opacity: 0.45; }
+.lg i.strip { width: 10px; height: 10px; border-radius: 2px; }
+.lg.off { opacity: 0.4; text-decoration: line-through; }
+.card-title small { font-weight: 400; }
+.section small { text-transform: none; letter-spacing: 0; }
+
+.ovtable th, .ovtable td { padding: 8px 9px; }
+.ovtable th { font-size: 0.78rem; text-align: right; }
+.ovtable th small { font-size: 0.66rem; font-weight: 400; }
+.ovtable th:first-child, .ovtable td:first-child { position: sticky; left: 0; background: var(--surface); z-index: 1; box-shadow: 1px 0 0 var(--line); }
+.ovtable tr.avg td { font-weight: 700; background: var(--surface-2); }
+.ovtable tr.avg td:first-child { background: var(--surface-2); }

@@ -18,10 +18,19 @@ You define your own trackers; the app stores everything **only on your device** 
 - **New entry** — one form for everything: date (defaults to today), time picker, and a section per tracker
   (blood pressure, liquid intake, headache…). Fill in one or more; empty sections are skipped.
 - **Dashboard → Day** — pick any day (‹ › or tap the date): daily aggregates per tracker and every entry of that day.
-- **Dashboard → Multi-day** — 3 days, 1 week, 1 month, 3 months or 1 year: a chart and summary per tracker,
-  and a day-by-day table (tap a row to open that day). Periods start no earlier than your first entry.
+- **Dashboard → Multi-day** — 3 days, 1 week, 1 month, 3 months, 1 year or all: a chart and summary per tracker.
+  Periods start no earlier than your first entry.
+- **Dashboard → Overview** — all parameters on one chart (blood pressure lines on the left axis, liquid bars on the
+  right axis, headache as a colour strip; tap legend items to hide/show), and a table of every tracked day with an
+  average row (tap a day to open it).
 - **History** — every entry, newest first; tap to edit or delete.
 - **Trackers** — create/edit trackers, backup, restore, CSV export.
+
+**Left / right arm.** Blood pressure is recorded per arm in one entry. The dashboard shows each arm and the
+difference *right − left* (per entry where both arms were measured): in the Day view, as a chart over time with
+summary tiles in Multi-day, and as a column in the Overview table. Differences at or above the threshold set in the
+tracker (default 10 mmHg, a placeholder) are shown in red. Readings from before this feature — including those
+restored from an older backup — belong to the right arm (`js/sides.js` explains how).
 
 Daily aggregates (defined in `dayAggregate()` in `js/app.js`): measurements are averaged, counters are summed,
 scales take the day's highest score. A scale with **No entry = 0** (the headache score) counts as 0 on days
@@ -65,7 +74,8 @@ css/styles.css        styles (light + dark)
 js/app.js             screens, forms, events
 js/store.js           data model + localStorage persistence, backup/restore
 js/stats.js           date helpers and statistics (pure functions)
-js/charts.js          dependency-free SVG charts
+js/charts.js          dependency-free SVG charts (incl. the combined overview chart)
+js/sides.js           left/right paired measurements and their difference
 sw.js                 service worker (offline)
 manifest.webmanifest  install metadata
 icons/                app icons

@@ -1,6 +1,7 @@
 import * as store from './store.js';
 import * as S from './stats.js';
-import { lineChart, barChart, calendar, emptyChart } from './charts.js';
+import { lineChart, barChart, calendar, overviewChart } from './charts.js';
+import { isSided, sideFields, pairs, deltaPairs, entryDeltas, deltaPoints, makeSided, sidedFields, baseFields } from './sides.js';
 
 // ---------- helpers ----------
 
@@ -67,9 +68,9 @@ function toast(msg) {
 // ---------- UI state (remembered per device) ----------
 
 const UI_KEY = 'trackstats.ui';
-const DASH_RANGE_VALUES = [3, 7, 30, 90, 365];
+const DASH_RANGE_VALUES = [3, 7, 30, 90, 365, 'all'];
 const ui = Object.assign(
-  { tab: 'today', dashMode: 'day', dashRange: 7, dashDay: null, tableAll: false, historyFilter: 'all', historyLimit: 150 },
+  { tab: 'today', dashMode: 'day', dashRange: 7, dashDay: null, tableAll: false, ovHidden: [], historyFilter: 'all', historyLimit: 150 },
   (() => {
     try {
       return JSON.parse(localStorage.getItem(UI_KEY)) || {};
@@ -84,7 +85,7 @@ if (ui.tab === 'stats') ui.tab = 'dashboard';
 if (!DASH_RANGE_VALUES.includes(ui.dashRange)) ui.dashRange = 7;
 function saveUi() {
   try {
-    localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, dashMode: ui.dashMode, dashRange: ui.dashRange, historyFilter: ui.historyFilter }));
+    localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, dashMode: ui.dashMode, dashRange: ui.dashRange, ovHidden: ui.ovHidden, historyFilter: ui.historyFilter }));
   } catch {
     /* ignore */
   }
@@ -103,18 +104,30 @@ function formatEntry(t, e, units = true) {
     case 'scale':
       return units ? `${fmt(v.v)} / ${t.scaleMax}` : fmt(v.v);
     default: {
-      const groups = [];
-      for (const f of store.fieldsOf(t)) {
-        if (!num(v[f.id])) continue;
-        const last = groups[groups.length - 1];
-        const val = fmt(v[f.id], f.decimals);
-        if (last && last.unit === f.unit && f.unit) last.vals.push(val);
-        else groups.push({ unit: f.unit, vals: [val] });
+      if (isSided(t)) {
+        // "L 128/82 · 66 | R 131/85 · 68"
+        const parts = t.sides.map((s) => {
+          const txt = valuesText(sideFields(t, s.id), v, false);
+          return txt ? `${s.short} ${txt}` : '';
+        });
+        return parts.filter(Boolean).join(' | ') || '–';
       }
-      if (!groups.length) return '–';
-      return groups.map((g) => g.vals.join('/') + (units && g.unit ? ' ' + esc(g.unit) : '')).join(' · ');
+      return valuesText(store.fieldsOf(t), v, units) || '–';
     }
   }
+}
+
+/** "128/82 mmHg · 66 bpm": consecutive values with the same unit are joined with "/". */
+function valuesText(fields, v, units = true) {
+  const groups = [];
+  for (const f of fields) {
+    if (!num(v[f.id])) continue;
+    const last = groups[groups.length - 1];
+    const val = fmt(v[f.id], f.decimals);
+    if (last && last.unit === f.unit && f.unit) last.vals.push(val);
+    else groups.push({ unit: f.unit, vals: [val] });
+  }
+  return groups.map((g) => g.vals.join('/') + (units && g.unit ? ' ' + esc(g.unit) : '')).join(' · ');
 }
 
 function todaySummary(t) {
@@ -292,14 +305,20 @@ function outOfTarget(f, v) {
 
 /**
  * Aggregate of one tracker for one day:
- *  measurement -> per value: mean, min, max, n
+ *  measurement -> per value: mean, min, max, n (+ right − left difference for left/right trackers)
  *  counter     -> total
  *  scale       -> highest and mean (0 when "no entry = 0" and nothing was logged)
  *  yes/no      -> done or not
  */
 function dayAggregate(t, list = []) {
   if (t.type === 'number') {
-    return { n: list.length, fields: store.fieldsOf(t).map((f) => ({ f, st: S.fieldStats(S.points(list, f.id), f) })) };
+    const a = { n: list.length, fields: store.fieldsOf(t).map((f) => ({ f, st: S.fieldStats(S.points(list, f.id), f) })) };
+    if (isSided(t)) {
+      // Arm difference (right − left) per entry that has both arms, then summarised.
+      const dps = deltaPoints(t, list);
+      a.deltas = pairs(t).map((p) => ({ p, st: S.fieldStats(dps[p.base]) }));
+    }
+    return a;
   }
   if (t.type === 'count') {
     return { n: list.length, total: list.reduce((a, e) => a + (num(e.values?.v) ? e.values.v : 0), 0), byKind: hasKinds(t) ? kindTotals(list) : null };
@@ -343,32 +362,16 @@ function kindBreakdown(t, kinds, perDays = 0) {
     .join('')}</div>`;
 }
 
-/** Compact text of a day aggregate (table cells). */
-function aggregateText(t, a) {
-  if (t.type === 'number') {
-    if (!a.n) return '–';
-    const values = {};
-    a.fields.forEach(({ f, st }) => st && (values[f.id] = st.mean));
-    return formatEntry(t, { values }, false);
-  }
-  if (t.type === 'count') return fmt(a.total);
-  if (t.type === 'scale') return a.max == null ? '–' : fmt(a.max);
-  return a.yes ? '✓' : '–';
-}
-
-function aggregateClass(t, a) {
-  if (t.type === 'number') return a.fields.some(({ f, st }) => st && outOfTarget(f, st.mean)) ? 'warn' : a.n ? '' : 'dim';
-  if (t.type === 'scale') return a.n ? (a.max > 0 ? 'strong' : '') : 'dim';
-  return a.n ? '' : 'dim';
-}
-
-/** Short unit label for a table column header. */
-function columnUnit(t) {
-  if (t.type === 'count') return t.unit || 'total';
-  if (t.type === 'scale') return `0–${t.scaleMax}`;
-  if (t.type === 'check') return 'done';
-  return store.fieldsOf(t)[0]?.unit || '';
-}
+/** "+5", "−3", "0" */
+const signed = (v, dp = 0) => {
+  if (!num(v)) return '–';
+  const r = Number(v.toFixed(dp)); // so −0.3 shows as "0", not "−0"
+  return (r > 0 ? '+' : r < 0 ? '−' : '') + fmt(Math.abs(r), dp);
+};
+const meanOf = (vals) => {
+  const v = vals.filter(num);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+};
 
 function entryRow(e) {
   const t = store.tracker(e.trackerId);
@@ -398,6 +401,13 @@ const DASH_RANGES = [
   [30, '1M'],
   [90, '3M'],
   [365, '1Y'],
+  ['all', 'All'],
+];
+
+const DASH_MODES = [
+  ['day', 'Day'],
+  ['period', 'Multi-day'],
+  ['overview', 'Overview'],
 ];
 
 function renderDashboard() {
@@ -409,10 +419,107 @@ function renderDashboard() {
   }
   const modeSeg = `
     <div class="seg" role="group" aria-label="View">
-      <button data-act="dash-mode" data-mode="day" aria-pressed="${ui.dashMode === 'day'}">Day</button>
-      <button data-act="dash-mode" data-mode="period" aria-pressed="${ui.dashMode === 'period'}">Multi-day</button>
+      ${DASH_MODES.map(([m, l]) => `<button data-act="dash-mode" data-mode="${m}" aria-pressed="${ui.dashMode === m}">${l}</button>`).join('')}
     </div>`;
-  view.innerHTML = modeSeg + (ui.dashMode === 'day' ? dayView(list) : periodView(list));
+  const body = ui.dashMode === 'period' ? periodView(list) : ui.dashMode === 'overview' ? overviewView(list) : dayView(list);
+  view.innerHTML = modeSeg + body;
+}
+
+// ---- left / right arm ----
+
+/** Table with a row per arm plus the difference (R − L); `a` is a dayAggregate over any set of entries. */
+function sidedTable(t, a, { withRange = false } = {}) {
+  const ps = pairs(t);
+  const stats = new Map(a.fields.map((x) => [x.f.id, x.st]));
+  const alertable = new Set(deltaPairs(t).map((p) => p.base));
+  const cell = (st, p) =>
+    st
+      ? `<td class="${outOfTarget(p, st.mean) ? 'warn' : ''}">${fmt(st.mean, p.decimals)}${withRange && st.min !== st.max ? `<small>${fmt(st.min, p.decimals)}–${fmt(st.max, p.decimals)}</small>` : ''}</td>`
+      : '<td class="dim">–</td>';
+  const sideRows = t.sides
+    .map((s) => `<tr><th>${esc(s.name)}</th>${ps.map((p) => cell(stats.get(s.id === 'L' ? p.L?.id : p.R.id), p)).join('')}</tr>`)
+    .join('');
+  const deltaRow = `<tr class="delta"><th>Difference<small>right − left</small></th>${ps
+    .map((p) => {
+      const st = a.deltas?.find((d) => d.p.base === p.base)?.st;
+      if (!st) return '<td class="dim">–</td>';
+      const warn = alertable.has(p.base) && num(t.deltaAlert) && Math.abs(st.mean) >= t.deltaAlert;
+      return `<td class="${warn ? 'warn' : ''}">${signed(st.mean, p.decimals)}${withRange && st.n > 1 ? `<small>${signed(st.min, p.decimals)} … ${signed(st.max, p.decimals)}</small>` : ''}</td>`;
+    })
+    .join('')}</tr>`;
+  const noPairs = a.n && !a.deltas?.some((d) => d.st);
+  return `
+    <div class="table-wrap">
+      <table class="sidetable">
+        <thead><tr><th></th>${ps.map((p) => `<th>${esc(p.name)}<small>${esc(p.unit)}</small></th>`).join('')}</tr></thead>
+        <tbody>${sideRows}${deltaRow}</tbody>
+      </table>
+    </div>
+    ${noPairs ? '<p class="muted small">The difference needs left and right measured in the same entry.</p>' : ''}`;
+}
+
+/** Arm difference over time: chart with the ±alert zone and summary tiles. */
+function deltaSection(t, period, start, end) {
+  const dps = deltaPoints(t, period);
+  const dp = deltaPairs(t);
+  const alert = num(t.deltaAlert) ? t.deltaAlert : null;
+  const colors = ['#7c3aed', '#db2777', '#0891b2'];
+  const series = dp.map((p, i) => {
+    const pts = dps[p.base];
+    return { name: `${p.name}`, color: colors[i % colors.length], points: pts.length > 120 ? S.dailyMeans(pts) : pts };
+  });
+  const head = `<h4 class="sub-h">Arm difference <small>right − left, per reading${alert ? ` · shaded: within ±${fmt(alert)} ${esc(dp[0]?.unit || '')}` : ''}</small></h4>`;
+  if (!series.some((s) => s.points.length)) {
+    return head + '<p class="muted small">No readings with both arms in this period. Enter left and right in the same entry to track the difference.</p>';
+  }
+  const tiles = dp
+    .map((p, i) => {
+      const vals = dps[p.base].map((x) => x.v);
+      if (!vals.length) return '';
+      const abs = vals.map(Math.abs);
+      const over = alert ? abs.filter((v) => v >= alert).length : null;
+      return `
+        <div class="field-stats">
+          <h4><span class="dot" style="background:${colors[i % colors.length]}"></span>Δ ${esc(p.name)} <small>${esc(p.unit)}</small></h4>
+          <div class="tiles">
+            ${tile('Avg', signed(meanOf(vals), p.decimals), `|Δ| ${fmt(meanOf(abs), p.decimals)}`, alert && Math.abs(meanOf(vals)) >= alert ? 'warn' : '')}
+            ${tile('Largest', fmt(Math.max(...abs), p.decimals), '|Δ|', alert && Math.max(...abs) >= alert ? 'warn' : '')}
+            ${alert ? tile(`≥ ${fmt(alert)}`, `${over}<small> / ${vals.length}</small>`, 'readings', over ? 'warn' : '') : tile('Readings', fmt(vals.length))}
+            ${tile('Latest', signed(vals[vals.length - 1], p.decimals))}
+          </div>
+        </div>`;
+    })
+    .join('');
+  return (
+    head +
+    lineChart({ series, xStart: start, xEnd: end, bands: alert ? [{ min: -alert, max: alert, color: '#059669' }] : [], yRange: alert ? [-alert, alert] : [0], label: 'Arm difference over time' }) +
+    `<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>Δ ${esc(s.name)}</span>`).join('')}</div>` +
+    tiles
+  );
+}
+
+/** Colors per arm: left = reds, right = blues; lighter for the 2nd/3rd value. */
+const ARM_COLORS = { L: ['#dc2626', '#f87171', '#fca5a5'], R: ['#2563eb', '#60a5fa', '#93c5fd'] };
+
+function sidedPeriodBody(t, period, start, end) {
+  const ps = pairs(t);
+  const main = ps.filter((p) => p.unit === ps[0].unit); // e.g. systolic + diastolic (mmHg); pulse stays in the table
+  const series = [];
+  main.forEach((p, i) => {
+    for (const s of t.sides) {
+      const f = s.id === 'L' ? p.L : p.R;
+      const pts = S.points(period, f.id);
+      series.push({ name: `${s.short} ${p.name}`, color: ARM_COLORS[s.id][i % 3], points: pts.length > 120 ? S.dailyMeans(pts) : pts });
+    }
+  });
+  const bands = main.filter((p) => num(p.targetMin) || num(p.targetMax)).map((p) => ({ min: p.targetMin, max: p.targetMax, color: '#64748b' }));
+  return (
+    lineChart({ series, xStart: start, xEnd: end, bands, label: `${t.name} over time` }) +
+    `<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` +
+    `<h4 class="sub-h">Period averages <small>lowest–highest below</small></h4>` +
+    sidedTable(t, dayAggregate(t, period), { withRange: true }) +
+    deltaSection(t, period, start, end)
+  );
 }
 
 // ---- single day ----
@@ -424,12 +531,16 @@ function daySummaryCard(t, list) {
   let extra = '';
   if (t.type === 'number') {
     sub = a.n ? `${plural(a.n, 'reading', 'readings')} · daily average` : 'No readings';
-    tiles = a.fields
-      .filter((x) => x.st)
-      .map(({ f, st }) =>
-        tile(esc(f.name), fmt(st.mean, f.decimals), [esc(f.unit), st.min !== st.max ? `${fmt(st.min, f.decimals)}–${fmt(st.max, f.decimals)}` : ''].filter(Boolean).join(' · '), outOfTarget(f, st.mean) ? 'warn' : '')
-      )
-      .join('');
+    if (isSided(t)) {
+      if (a.n) extra = sidedTable(t, a);
+    } else {
+      tiles = a.fields
+        .filter((x) => x.st)
+        .map(({ f, st }) =>
+          tile(esc(f.name), fmt(st.mean, f.decimals), [esc(f.unit), st.min !== st.max ? `${fmt(st.min, f.decimals)}–${fmt(st.max, f.decimals)}` : ''].filter(Boolean).join(' · '), outOfTarget(f, st.mean) ? 'warn' : '')
+        )
+        .join('');
+    }
   } else if (t.type === 'count') {
     sub = a.n ? (hasKinds(t) ? plural(a.n, 'drink', 'drinks') : plural(a.n, 'entry', 'entries')) : 'Nothing logged';
     const goal = t.dailyGoal > 0 ? `${pct(a.total / t.dailyGoal)} of ${fmt(t.dailyGoal)} goal` : '';
@@ -470,7 +581,9 @@ function dayView(list) {
 function periodCard(t, start, end, dayMap) {
   const period = [...dayMap.values()].flat();
   let body = '';
-  if (t.type === 'number') {
+  if (isSided(t)) {
+    body = sidedPeriodBody(t, period, start, end);
+  } else if (t.type === 'number') {
     const fields = store.fieldsOf(t);
     const series = [];
     const bands = [];
@@ -524,12 +637,11 @@ function periodCard(t, start, end, dayMap) {
       })
       .filter((p) => num(p.v));
     const vals = daily.map((p) => p.v);
-    const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
     const above = vals.filter((v) => v > 0).length;
     body =
       lineChart({ series: [{ name: t.name, color: t.color, points: daily }], xStart: start, xEnd: end, yRange: [t.defaultZero ? 0 : t.scaleMin, t.scaleMax], label: `${t.name} per day` }) +
       `<div class="tiles">
-        ${tile('Daily avg', fmt(mean, 1), t.defaultZero ? 'incl. 0 days' : '')}
+        ${tile('Daily avg', fmt(meanOf(vals), 1), t.defaultZero ? 'incl. 0 days' : '')}
         ${tile('Highest', vals.length ? fmt(Math.max(...vals)) : '–', `of ${t.scaleMax}`)}
         ${t.defaultZero ? tile('Days > 0', `${above}<small> / ${vals.length}</small>`) : tile('Days scored', fmt(vals.length))}
       </div>`;
@@ -545,54 +657,198 @@ function periodCard(t, start, end, dayMap) {
   return `<section class="card pcard" style="--c:${t.color}">${cardTitle(t, plural(period.length, 'entry', 'entries'))}${body}</section>`;
 }
 
-function periodView(list) {
+/** The selected period, never starting before the first entry. */
+function periodRange() {
   const today = S.startOfDay(new Date());
   const end = S.endOfDay(today);
-  let start = S.addDays(today, -(ui.dashRange - 1));
-  // Don't count days before tracking began.
   const all = store.entries();
+  const first = all.length ? S.startOfDay(all[all.length - 1].ts) : today;
+  let start = ui.dashRange === 'all' ? first : S.addDays(today, -(ui.dashRange - 1));
   let clamped = false;
-  if (all.length) {
-    const first = S.startOfDay(all[all.length - 1].ts);
-    if (first > start) {
-      start = first;
-      clamped = true;
-    }
+  if (first > start) {
+    start = first;
+    clamped = true;
   }
-  const days = S.eachDay(start, end);
-  const groups = new Map(list.map((t) => [t.id, byDay(S.inPeriod(store.entries(t.id), start, end))]));
-  const rows = days.slice().reverse();
-  const shown = ui.tableAll ? rows : rows.slice(0, 31);
-  const startLabel = start.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: start.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+  return { today, start, end, clamped };
+}
 
+function rangeHeader({ today, start, end, clamped }) {
+  const days = S.eachDay(start, end).length;
+  const startLabel = start.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: start.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
   return `
     <div class="seg" role="group" aria-label="Period">
       ${DASH_RANGES.map(([r, l]) => `<button data-act="dash-range" data-range="${r}" aria-pressed="${ui.dashRange === r}">${l}</button>`).join('')}
     </div>
-    <p class="muted small period-note">${startLabel} – today · ${plural(days.length, 'day', 'days')}${clamped ? ' (since tracking began)' : ''}</p>
-    ${list.map((t) => periodCard(t, start, end, groups.get(t.id))).join('')}
-    <h3 class="section">Day by day</h3>
-    <div class="card table-wrap">
-      <table class="daytable">
-        <thead><tr><th>Day</th>${list.map((t) => `<th title="${esc(t.name)}">${esc(t.icon)}<small>${esc(columnUnit(t))}</small></th>`).join('')}</tr></thead>
+    <p class="muted small period-note">${startLabel} – today · ${plural(days, 'day', 'days')}${clamped && ui.dashRange !== 'all' ? ' (since tracking began)' : ''}</p>`;
+}
+
+function periodView(list) {
+  const r = periodRange();
+  const groups = new Map(list.map((t) => [t.id, byDay(S.inPeriod(store.entries(t.id), r.start, r.end))]));
+  return rangeHeader(r) + list.map((t) => periodCard(t, r.start, r.end, groups.get(t.id))).join('');
+}
+
+// ---- overview: everything on one chart + a table of all tracked days ----
+
+/** Line/bar/strip series for the combined chart, one value per day. */
+function overviewSeries(list, days, groups) {
+  const lines = [];
+  const bars = [];
+  const strips = [];
+  let leftUnit = '';
+  let rightUnit = '';
+  const dayList = (t, d) => groups.get(t.id).get(S.dayKey(d)) || [];
+  const dayMean = (t, d, ids) => meanOf(dayList(t, d).flatMap((e) => ids.map((id) => e.values?.[id])));
+  for (const t of list) {
+    if (t.type === 'number') {
+      const ps = pairs(t);
+      const unit = ps[0]?.unit || '';
+      leftUnit ||= unit;
+      if (isSided(t)) {
+        ps.forEach((p, i) => {
+          if (p.unit === unit) {
+            for (const s of t.sides) {
+              const f = s.id === 'L' ? p.L : p.R;
+              lines.push({ key: `${t.id}:${f.id}`, name: `${s.short} ${p.name}`, color: ARM_COLORS[s.id][i % 3], values: days.map((d) => dayMean(t, d, [f.id])) });
+            }
+          } else {
+            // e.g. pulse: one dashed line, average of both arms
+            lines.push({ key: `${t.id}:${p.base}`, name: `${p.name} (${p.unit})`, color: '#64748b', dash: true, values: days.map((d) => dayMean(t, d, [p.L?.id, p.R.id].filter(Boolean))) });
+          }
+        });
+      } else {
+        store.fieldsOf(t).forEach((f, i) =>
+          lines.push({ key: `${t.id}:${f.id}`, name: `${f.name}${f.unit && f.unit !== unit ? ` (${f.unit})` : ''}`, color: seriesColor(t, i), dash: f.unit !== unit, values: days.map((d) => dayMean(t, d, [f.id])) })
+        );
+      }
+    } else if (t.type === 'count') {
+      const values = days.map((d) => {
+        const l = dayList(t, d);
+        return l.length ? dayAggregate(t, l).total : null;
+      });
+      if (!bars.length) {
+        bars.push({ key: t.id, name: `${t.name} (${t.unit || 'total'})`, color: t.color, values });
+        rightUnit = t.unit || '';
+      } else {
+        strips.push({ key: t.id, name: t.name, icon: t.icon, color: t.color, values, max: Math.max(1, ...values.filter(num)) });
+      }
+    } else if (t.type === 'scale') {
+      strips.push({ key: t.id, name: `${t.name} (0–${t.scaleMax})`, icon: t.icon, color: t.color, max: t.scaleMax, values: days.map((d) => dayAggregate(t, dayList(t, d)).max) });
+    } else {
+      strips.push({ key: t.id, name: t.name, icon: t.icon, color: t.color, max: 1, values: days.map((d) => (dayList(t, d).length ? (dayAggregate(t, dayList(t, d)).yes ? 1 : 0) : null)) });
+    }
+  }
+  return { lines, bars, strips, leftUnit, rightUnit };
+}
+
+/** Table columns: each knows how to get its value(s) from a tracker's day aggregate. */
+function overviewColumns(list) {
+  const cols = [];
+  for (const t of list) {
+    if (isSided(t)) {
+      const ps = pairs(t);
+      const main = ps.filter((p) => p.unit === ps[0].unit);
+      const mean = (a, id) => a.fields.find((x) => x.f.id === id)?.st?.mean ?? null;
+      for (const s of t.sides) {
+        cols.push({
+          t,
+          head: `${s.name}`,
+          sub: `${main.map((p) => p.name.slice(0, 3).toLowerCase()).join('/')} ${main[0]?.unit || ''}`,
+          value: (a) => main.map((p) => mean(a, s.id === 'L' ? p.L?.id : p.R.id)),
+          text: (v) => (v.some(num) ? v.map((x, i) => fmt(x, main[i].decimals)).join('/') : '–'),
+          cls: (v) => (v.some((x, i) => outOfTarget(main[i], x)) ? 'warn' : ''),
+        });
+      }
+      for (const p of deltaPairs(t).slice(0, 1)) {
+        cols.push({
+          t,
+          head: 'Δ R − L',
+          sub: `${p.name.slice(0, 3).toLowerCase()} ${p.unit}`,
+          value: (a) => [a.deltas?.find((d) => d.p.base === p.base)?.st?.mean ?? null],
+          text: (v) => signed(v[0], p.decimals),
+          cls: (v) => (num(t.deltaAlert) && num(v[0]) && Math.abs(v[0]) >= t.deltaAlert ? 'warn' : ''),
+        });
+      }
+      for (const p of ps.filter((x) => x.unit !== ps[0].unit)) {
+        cols.push({ t, head: p.name, sub: `${p.unit} · avg`, value: (a) => [meanOf([mean(a, p.L?.id), mean(a, p.R.id)])], text: (v) => fmt(v[0], p.decimals) });
+      }
+    } else if (t.type === 'number') {
+      for (const f of store.fieldsOf(t)) {
+        cols.push({ t, head: f.name, sub: f.unit, value: (a) => [a.fields.find((x) => x.f.id === f.id)?.st?.mean ?? null], text: (v) => fmt(v[0], f.decimals), cls: (v) => (outOfTarget(f, v[0]) ? 'warn' : '') });
+      }
+    } else if (t.type === 'count') {
+      cols.push({ t, head: t.name, sub: t.unit || 'total', value: (a) => [a.n ? a.total : null], text: (v) => fmt(v[0]) });
+    } else if (t.type === 'scale') {
+      cols.push({ t, head: t.name, sub: `0–${t.scaleMax}${t.defaultZero ? ' · max' : ''}`, value: (a) => [a.max], text: (v, avg) => fmt(v[0], avg ? 1 : 0), cls: (v) => (v[0] > 0 ? 'strong' : '') });
+    } else {
+      cols.push({ t, head: t.name, sub: 'done', value: (a) => [a.n ? (a.yes ? 1 : 0) : null], text: (v, avg) => (avg ? pct(v[0]) : v[0] ? '✓' : '–') });
+    }
+  }
+  return cols;
+}
+
+function overviewView(list) {
+  const r = periodRange();
+  const days = S.eachDay(r.start, r.end);
+  const groups = new Map(list.map((t) => [t.id, byDay(S.inPeriod(store.entries(t.id), r.start, r.end))]));
+  const hidden = new Set(ui.ovHidden || []);
+  const s = overviewSeries(list, days, groups);
+  const chart = overviewChart({
+    days,
+    lines: s.lines.filter((x) => !hidden.has(x.key)),
+    bars: s.bars.filter((x) => !hidden.has(x.key)),
+    strips: s.strips.filter((x) => !hidden.has(x.key)),
+    leftUnit: s.leftUnit,
+    rightUnit: s.rightUnit,
+  });
+  const legend = [...s.lines, ...s.bars, ...s.strips]
+    .map(
+      (x) =>
+        `<button class="lg${hidden.has(x.key) ? ' off' : ''}" data-act="ov-toggle" data-key="${esc(x.key)}" aria-pressed="${!hidden.has(x.key)}"><i class="${s.bars.includes(x) ? 'bar' : s.strips.includes(x) ? 'strip' : x.dash ? 'dash' : ''}" style="--lc:${x.color}"></i>${esc(x.name)}</button>`
+    )
+    .join('');
+
+  // Table: every tracked day (any entry) in the period, newest first, plus averages.
+  const cols = overviewColumns(list);
+  const tracked = days
+    .filter((d) => list.some((t) => groups.get(t.id).has(S.dayKey(d))))
+    .reverse()
+    .map((d) => {
+      const k = S.dayKey(d);
+      const aggs = new Map(list.map((t) => [t.id, dayAggregate(t, groups.get(t.id).get(k) || [])]));
+      return { d, k, vals: cols.map((c) => c.value(aggs.get(c.t.id))) };
+    });
+  const avgs = cols.map((c, i) => {
+    const width = tracked[0]?.vals[i].length || 1;
+    return Array.from({ length: width }, (_, j) => meanOf(tracked.map((row) => row.vals[i][j])));
+  });
+  const shown = ui.tableAll ? tracked : tracked.slice(0, 60);
+  const cellHtml = (c, v, avg = false) => `<td class="${(c.cls && c.cls(v)) || (v.some(num) ? '' : 'dim')}">${c.text(v, avg)}</td>`;
+
+  return `
+    ${rangeHeader(r)}
+    <section class="card pcard">
+      <h3 class="card-title"><span>All parameters<small class="block">per day · tap a label below to hide or show it</small></span></h3>
+      ${chart}
+      <div class="ov-legend">${legend}</div>
+      <p class="muted small">Left axis: ${esc(s.leftUnit)}${s.rightUnit ? ` · right axis: ${esc(s.rightUnit)} (bars)` : ''}${s.strips.length ? ' · strips below: darker = higher' : ''}. Values are daily averages (blood pressure), totals (liquid) and highest score (headache).</p>
+    </section>
+    <h3 class="section">Tracked days <small>${plural(tracked.length, 'day', 'days')}</small></h3>
+    ${
+      tracked.length
+        ? `<div class="card table-wrap">
+      <table class="daytable ovtable">
+        <thead><tr><th>Day</th>${cols.map((c) => `<th>${esc(c.head)}<small>${esc(c.sub)}</small></th>`).join('')}</tr></thead>
         <tbody>
-          ${shown
-            .map((d) => {
-              const k = S.dayKey(d);
-              const cells = list
-                .map((t) => {
-                  const a = dayAggregate(t, groups.get(t.id).get(k));
-                  return `<td class="${aggregateClass(t, a)}">${aggregateText(t, a)}</td>`;
-                })
-                .join('');
-              return `<tr data-act="goto-day" data-day="${k}"><td>${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</td>${cells}</tr>`;
-            })
-            .join('')}
+          <tr class="avg"><td>Average</td>${cols.map((c, i) => cellHtml(c, avgs[i], true)).join('')}</tr>
+          ${shown.map((row) => `<tr data-act="goto-day" data-day="${row.k}"><td>${row.d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</td>${cols.map((c, i) => cellHtml(c, row.vals[i])).join('')}</tr>`).join('')}
         </tbody>
       </table>
     </div>
-    ${rows.length > shown.length ? `<button class="btn block" data-act="table-all">Show all ${rows.length} days</button>` : ''}
-    <p class="hint">Per day: measurements are averaged, counters are summed, scores show the day’s highest${list.some((t) => t.defaultZero) ? ' (0 when none logged)' : ''}. Red = average outside target. Tap a day to open it.</p>`;
+    ${tracked.length > shown.length ? `<button class="btn block" data-act="table-all">Show all ${tracked.length} days</button>` : ''}`
+        : '<div class="card pad muted small">Nothing tracked in this period.</div>'
+    }
+    <p class="hint">Red = outside target, or an arm difference of ${fmt(list.find(isSided)?.deltaAlert ?? 10)} or more. Swipe the table sideways if it is wider than the screen; tap a day to open it.</p>`;
 }
 
 function targetText(f) {
@@ -690,6 +946,27 @@ function valueInputs(t, vals, prefix, { fresh = false, autofocus = false, hintLa
     return `
       <div class="drinks" data-tracker="${t.id}">${drinkRow(t, prefix, 0, vals.v, kind)}</div>
       ${more ? `<button type="button" class="btn block slim" data-act="add-drink" data-tracker="${t.id}" data-prefix="${prefix}">＋ Another ${esc((t.kindLabel || 'item').toLowerCase())}</button>` : ''}`;
+  }
+  if (isSided(t)) {
+    // One row per arm, e.g. Left arm: Systolic / Diastolic / Pulse
+    return t.sides
+      .map((s, k) => {
+        const fields = sideFields(t, s.id);
+        const cols = fields.length >= 3 ? 'grid3' : fields.length === 2 ? 'grid2' : '';
+        return `
+        <div class="side-block">
+          <div class="side-label">${esc(s.name)}</div>
+          <div class="${cols}">${fields
+            .map(
+              (f, i) => `
+            <label class="field"><span>${esc(f.name)}${f.unit ? ` <small>${esc(f.unit)}</small>` : ''}</span>
+              <input name="${prefix}${f.id}" type="text" inputmode="decimal" autocomplete="off" ${autofocus && k === 0 && i === 0 ? 'autofocus' : ''}
+                value="${num(vals[f.id]) ? vals[f.id] : ''}"></label>`
+            )
+            .join('')}</div>
+        </div>`;
+      })
+      .join('');
   }
   if (t.type === 'number') {
     const last = hintLast ? store.entries(t.id)[0] : null;
@@ -903,6 +1180,10 @@ function openTrackerEditor(id) {
   draft.fields ||= [newField('Value')];
   draft._new = !existing;
   draft._locked = existing && store.entries(existing.id).length > 0;
+  // Left/right trackers are edited as their base values; both arms are rebuilt on save.
+  draft.sided = isSided(draft);
+  draft._sidedLocked = draft.sided && draft._locked;
+  if (draft.sided) draft.fields = baseFields(draft).map(({ side, base, ...f }) => f);
   renderTrackerEditor();
 }
 
@@ -934,7 +1215,19 @@ function renderTrackerEditor() {
         )
         .join('')}
       <button type="button" class="btn block" data-act="add-field">＋ Add another value</button>
-      <p class="hint left">Example: blood pressure has three values — Systolic, Diastolic (mmHg) and Pulse (bpm).</p>`;
+      <p class="hint left">Example: blood pressure has three values — Systolic, Diastolic (mmHg) and Pulse (bpm).</p>
+      <input type="hidden" name="numberShown" value="1">
+      <label class="check-line">
+        <input type="checkbox" name="sided" ${d.sided ? 'checked' : ''} ${d._sidedLocked ? 'disabled' : ''}>
+        <span><b>Measure on left and right arm</b><small class="block">Each entry gets the values above for both arms, and the dashboard shows the difference (right − left).${d._sidedLocked ? ' Can’t be switched off once left/right data exists.' : ' Existing values become right arm.'}</small></span>
+      </label>
+      ${
+        d.sided
+          ? `<label class="field"><span>Flag an arm difference of <small>(${esc(d.fields[0]?.unit || 'units')}, compared on ${esc(d.fields.filter((f) => f.unit === d.fields[0]?.unit).map((f) => f.name).join(' and '))})</small></span>
+              <input name="deltaAlert" inputmode="decimal" value="${num(d.deltaAlert) ? d.deltaAlert : 10}"></label>
+             <p class="hint left">10 is a placeholder — set the threshold that applies to you.</p>`
+          : ''
+      }`;
   } else if (d.type === 'scale') {
     typeBody = `
       <div class="grid2">
@@ -985,9 +1278,16 @@ function renderTrackerEditor() {
       readDraft(form);
       if (!draft.name.trim()) return formError(form, 'Give the tracker a name.');
       if (draft.type === 'number' && draft.fields.some((f) => !f.name.trim())) return formError(form, 'Every value needs a name.');
-      const { _new, _locked, ...t } = draft;
+      const { _new, _locked, _sidedLocked, sided, ...t } = draft;
       t.name = t.name.trim();
       if (t.type !== 'number') delete t.fields;
+      if (t.type === 'number' && sided) {
+        Object.assign(t, makeSided({ ...t, sides: undefined }, 10));
+        if (!num(t.deltaAlert)) t.deltaAlert = 10;
+      } else {
+        delete t.sides;
+        delete t.deltaAlert;
+      }
       store.saveTracker(t);
       toast(_new ? 'Tracker created' : 'Tracker saved');
       draft = null;
@@ -1017,6 +1317,10 @@ function readDraft(form) {
     d.trackKind = fd.has('trackKind');
     d.kinds = String(fd.get('kinds')).split(',').map((s) => s.trim()).filter(Boolean);
   }
+  if (fd.has('numberShown')) {
+    d.sided = d._sidedLocked || fd.has('sided');
+    if (fd.has('deltaAlert')) d.deltaAlert = parseNum(fd.get('deltaAlert'));
+  }
   for (const f of d.fields || []) {
     if (!fd.has('fn_' + f.id)) continue;
     f.name = String(fd.get('fn_' + f.id));
@@ -1031,7 +1335,7 @@ function readDraft(form) {
 
 // `mine: true` = the default setup offered on first launch.
 const TEMPLATES = [
-  { mine: true, name: 'Blood pressure', icon: '🩺', color: '#dc2626', type: 'number', fields: [['Systolic', 'mmHg', 0, 90, 120], ['Diastolic', 'mmHg', 0, 60, 80], ['Pulse', 'bpm', 0, null, null]] },
+  { mine: true, name: 'Blood pressure', icon: '🩺', color: '#dc2626', type: 'number', sided: true, deltaAlert: 10, fields: [['Systolic', 'mmHg', 0, 90, 120], ['Diastolic', 'mmHg', 0, 60, 80], ['Pulse', 'bpm', 0, null, null]] },
   { mine: true, name: 'Liquid intake', icon: '🥤', color: '#0891b2', type: 'count', unit: 'ml', step: 250, dailyGoal: null, trackKind: true, kindLabel: 'Drink', kinds: DEFAULT_DRINKS },
   { mine: true, name: 'Headache', icon: '🤕', color: '#7c3aed', type: 'scale', scaleMin: 1, scaleMax: 10, lowLabel: 'Mild', highLabel: 'Severe', defaultZero: true },
   { name: 'Weight', icon: '⚖️', color: '#2563eb', type: 'number', fields: [['Weight', 'kg', 1, null, null]] },
@@ -1053,7 +1357,7 @@ function fromTemplate(tp) {
     Object.assign(t, { unit: tp.unit, step: tp.step || 1, dailyGoal: tp.dailyGoal });
     if (tp.trackKind) Object.assign(t, { trackKind: true, kindLabel: tp.kindLabel, kinds: [...tp.kinds] });
   }
-  return t;
+  return tp.sided ? makeSided(t, tp.deltaAlert) : t;
 }
 
 function openTemplates() {
@@ -1114,7 +1418,8 @@ function exportCsv() {
     for (const f of store.fieldsOf(t)) {
       const v = e.values?.[f.id];
       if (!num(v)) continue;
-      rows.push([S.dayKey(d), `${pad(d.getHours())}:${pad(d.getMinutes())}`, q(t.name), q(f.name), v, q(f.unit), q(e.kind), q(e.note)].join(','));
+      const side = f.side && t.sides?.find((s) => s.id === f.side);
+      rows.push([S.dayKey(d), `${pad(d.getHours())}:${pad(d.getMinutes())}`, q(t.name), q(side ? `${side.name} ${f.name}` : f.name), v, q(f.unit), q(e.kind), q(e.note)].join(','));
     }
   }
   shareOrDownload(`trackstats-${stamp()}.csv`, rows.join('\n'), 'text/csv');
@@ -1129,6 +1434,7 @@ async function importFile(input) {
     const n = { trackers: data.trackers?.length ?? 0, entries: data.entries?.length ?? 0 };
     if (!confirm(`Restore ${n.trackers} trackers and ${n.entries} entries from “${file.name}”?\n\nThey are merged with what is here; items that exist in both are replaced by the backup version.`)) return;
     store.importData(data);
+    migrate(); // older backups: e.g. blood pressure without left/right -> all values go to the right arm
     toast('Backup restored');
   } catch (err) {
     alert('Could not read that file: ' + err.message);
@@ -1236,7 +1542,7 @@ document.addEventListener('click', (ev) => {
       saveUi();
       return renderDashboard();
     case 'dash-range':
-      ui.dashRange = Number(el.dataset.range);
+      ui.dashRange = el.dataset.range === 'all' ? 'all' : Number(el.dataset.range);
       ui.tableAll = false;
       saveUi();
       return renderDashboard();
@@ -1254,6 +1560,14 @@ document.addEventListener('click', (ev) => {
     case 'table-all':
       ui.tableAll = true;
       return renderDashboard();
+    case 'ov-toggle': {
+      const hidden = new Set(ui.ovHidden || []);
+      if (hidden.has(el.dataset.key)) hidden.delete(el.dataset.key);
+      else hidden.add(el.dataset.key);
+      ui.ovHidden = [...hidden];
+      saveUi();
+      return renderDashboard();
+    }
     case 'more-history':
       ui.historyLimit += 300;
       return renderHistory();
@@ -1305,13 +1619,21 @@ $$('.tabbar button').forEach((b) =>
   })
 );
 
-// One-time upgrade: Headache trackers created before "no entry = 0" existed get it switched on.
-for (const t of store.trackers()) {
-  if (t.type === 'scale' && t.name === 'Headache' && t.defaultZero === undefined) store.saveTracker({ ...t, defaultZero: true });
-  if (t.type === 'count' && t.name === 'Liquid intake' && t.trackKind === undefined) {
-    store.saveTracker({ ...t, trackKind: true, kindLabel: 'Drink', kinds: [...DEFAULT_DRINKS] });
+/**
+ * Upgrades trackers made by older versions. Runs at start-up and after restoring a backup
+ * (a backup carries the old tracker definitions). Entries are never rewritten:
+ * blood pressure values recorded before left/right existed keep their field ids, which are the right-arm ids.
+ */
+function migrate() {
+  for (const t of store.trackers()) {
+    if (t.type === 'scale' && t.name === 'Headache' && t.defaultZero === undefined) store.saveTracker({ ...t, defaultZero: true });
+    if (t.type === 'count' && t.name === 'Liquid intake' && t.trackKind === undefined) {
+      store.saveTracker({ ...t, trackKind: true, kindLabel: 'Drink', kinds: [...DEFAULT_DRINKS] });
+    }
+    if (t.type === 'number' && t.name === 'Blood pressure' && !isSided(t)) store.saveTracker(makeSided(t));
   }
 }
+migrate();
 
 store.onChange(render);
 
